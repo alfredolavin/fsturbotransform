@@ -1,0 +1,8 @@
+build/
+fsturbotransform
+/FiraCode-Regular.ttf
+*.o
+*.so
+*.a
+.cache/
+compile_commands.json

@@ -1,0 +1,7 @@
+Task: Create C++ CLI tool for recursive file/dir transformation
+Task: Upgrade codebase to C++26 standard (-std=c++26) utilizing C++26 features (std::print, std::println, constexpr improvements, pack indexing, C++26 string formatting)
+Task: Add rule/memory for rich terminal output (Sixel graphics, real-time animated progress bar with gradients, mini-terminal widget with Fira Code font & syntax highlighting, --color=[full|none|simple|terminal] switch)
+Task: Refactor src/fira_code_font.hpp to use C++26 #embed directive for FiraCode-Regular.ttf
+Task: Configure CMake build system (CMakeLists.txt) with FetchContent for dependencies and install target targeting ~/.local/bin
+Task: Enhance Sixel graphics engine for full graphical UI, in-place reused mini-console below gradient progress bar, suppress scrolling text output unless explicitly requested (--verbose), support all color modes (-c, --color=[full,none,simple,terminal])
+Task: Commit and push changes to git repository
