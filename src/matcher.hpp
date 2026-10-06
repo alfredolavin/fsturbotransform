@@ -2,6 +2,7 @@
 #define MATCHER_HPP
 
 #include <fstream>
+#include <initializer_list>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -54,6 +55,215 @@ static_assert(glob_match("src/?.c", "src/a.c") && !glob_match("src/?.c", "src/ab
 static_assert(glob_match("a[1].txt", "a[1].txt"));
 static_assert(!glob_match("build", "build/out"));
 
+// --- .gitignore semantics -------------------------------------------------------
+
+namespace detail {
+
+constexpr bool ascii_class(std::string_view name, char c) {
+    const bool lower = c >= 'a' && c <= 'z', upper = c >= 'A' && c <= 'Z', digit = c >= '0' && c <= '9';
+    const bool space = c == ' ' || (c >= '\t' && c <= '\r');
+    const bool cntrl = (c >= 0 && c < 32) || c == 127;
+    const bool graph = c > 32 && c < 127;
+    if (name == "alpha") return lower || upper;
+    if (name == "digit") return digit;
+    if (name == "alnum") return lower || upper || digit;
+    if (name == "upper") return upper;
+    if (name == "lower") return lower;
+    if (name == "space") return space;
+    if (name == "blank") return c == ' ' || c == '\t';
+    if (name == "punct") return graph && !(lower || upper || digit);
+    if (name == "xdigit") return digit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    if (name == "cntrl") return cntrl;
+    if (name == "graph") return graph;
+    if (name == "print") return graph || c == ' ';
+    return false;
+}
+
+// Matches the bracket expression starting at p[pi] == '[' against `c`.
+// Returns the index just past the closing ']', or npos when the expression is unterminated.
+constexpr std::size_t match_bracket(std::string_view p, std::size_t pi, char c, bool& matched) {
+    std::size_t i = pi + 1;
+    bool negate = false;
+    if (i < p.size() && (p[i] == '!' || p[i] == '^')) {
+        negate = true;
+        ++i;
+    }
+    bool hit = false;
+    for (bool first = true; i < p.size() && (first || p[i] != ']'); first = false) {
+        if (p[i] == '[' && i + 1 < p.size() && p[i + 1] == ':') {
+            const std::size_t end = p.find(":]", i + 2);
+            if (end == std::string_view::npos) return std::string_view::npos;
+            hit |= ascii_class(p.substr(i + 2, end - i - 2), c);
+            i = end + 2;
+            continue;
+        }
+        char lo = p[i];
+        if (lo == '\\' && i + 1 < p.size()) lo = p[++i];
+        if (i + 2 < p.size() && p[i + 1] == '-' && p[i + 2] != ']') {
+            std::size_t j = i + 2;
+            char hi = p[j];
+            if (hi == '\\' && j + 1 < p.size()) hi = p[++j];
+            hit |= lo <= c && c <= hi;
+            i = j + 1;
+        } else {
+            hit |= c == lo;
+            ++i;
+        }
+    }
+    if (i >= p.size()) return std::string_view::npos;
+    matched = hit != negate;
+    return i + 1;
+}
+
+} // namespace detail
+
+// git's wildmatch with WM_PATHNAME: '*', '?' and [...] never match '/',
+// and "**" is special only as a whole path component:
+//   "**/x" any leading directories, "x/**" everything inside, "a/**/b" zero or more directories.
+// A backslash escapes the next character.
+constexpr bool wildmatch(std::string_view p, std::string_view t) {
+    std::size_t pi = 0, ti = 0;
+    while (pi < p.size()) {
+        const char c = p[pi];
+        if (c == '*') {
+            const bool component_start = pi == 0 || p[pi - 1] == '/';
+            std::size_t end = pi;
+            while (end < p.size() && p[end] == '*') ++end;
+            const bool globstar = end - pi >= 2 && component_start && (end == p.size() || p[end] == '/');
+            pi = end;
+            if (globstar) {
+                if (pi == p.size()) return true;
+                const std::string_view rest = p.substr(pi + 1);
+                if (wildmatch(rest, t.substr(ti))) return true;
+                for (std::size_t k = ti; k < t.size(); ++k)
+                    if (t[k] == '/' && wildmatch(rest, t.substr(k + 1))) return true;
+                return false;
+            }
+            const std::string_view rest = p.substr(pi);
+            for (std::size_t k = ti;; ++k) {
+                if (wildmatch(rest, t.substr(k))) return true;
+                if (k == t.size() || t[k] == '/') return false;
+            }
+        }
+        if (ti == t.size()) return false;
+        if (c == '?') {
+            if (t[ti] == '/') return false;
+        } else if (c == '[') {
+            bool matched = false;
+            const std::size_t next = detail::match_bracket(p, pi, t[ti], matched);
+            if (next != std::string_view::npos) {
+                if (!matched || t[ti] == '/') return false;
+                pi = next;
+                ++ti;
+                continue;
+            }
+            if (t[ti] != '[') return false; // unterminated: a literal '['
+        } else if (c == '\\') {
+            if (pi + 1 == p.size() || p[pi + 1] != t[ti]) return false; // a trailing '\' never matches
+            ++pi;
+        } else if (c != t[ti]) {
+            return false;
+        }
+        ++pi;
+        ++ti;
+    }
+    return ti == t.size();
+}
+
+static_assert(wildmatch("*.log", "debug.log") && !wildmatch("*.log", "logs/debug.log"));
+static_assert(wildmatch("**/foo", "foo") && wildmatch("**/foo", "a/b/foo") && !wildmatch("**/foo", "afoo"));
+static_assert(wildmatch("abc/**", "abc/x/y") && !wildmatch("abc/**", "abc"));
+static_assert(wildmatch("a/**/b", "a/b") && wildmatch("a/**/b", "a/x/y/b") && !wildmatch("a/**/b", "a/xb"));
+static_assert(wildmatch("x**y", "xaay") && !wildmatch("x**y", "xa/y")); // not a whole component: plain '*'
+static_assert(wildmatch("*.[oa]", "lib.a") && !wildmatch("*.[oa]", "lib.c"));
+static_assert(wildmatch("[!a-c]x", "dx") && !wildmatch("[!a-c]x", "bx") && wildmatch("[]]", "]"));
+static_assert(wildmatch("[[:digit:]][[:upper:]]", "7Q") && !wildmatch("[[:digit:]]", "q"));
+static_assert(wildmatch("\\#notes", "#notes") && wildmatch("a\\*b", "a*b") && !wildmatch("a\\*b", "axb"));
+static_assert(wildmatch("[ab", "[ab") && !wildmatch("trail\\", "trail\\"));
+
+// One line of a .gitignore file.
+struct GitignoreRule {
+    std::string pattern;   // leading '/', trailing '/' and '!' removed
+    bool negated = false;  // "!pattern" re-includes
+    bool dir_only = false; // "pattern/" matches directories only
+    bool anchored = false; // a '/' at the start or in the middle: match the whole relative path
+
+    // Returns false for blank lines and comments.
+    constexpr bool parse(std::string_view line) {
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.remove_suffix(1);
+        // Trailing spaces are ignored unless escaped with a backslash.
+        while (!line.empty() && line.back() == ' ' && !(line.size() >= 2 && line[line.size() - 2] == '\\')) line.remove_suffix(1);
+        if (line.empty() || line.front() == '#') return false;
+        if (line.front() == '!') {
+            negated = true;
+            line.remove_prefix(1);
+        }
+        if (line.ends_with('/') && !line.ends_with("\\/")) {
+            dir_only = true;
+            line.remove_suffix(1);
+        }
+        anchored = line.find('/') != std::string_view::npos;
+        if (line.starts_with('/')) line.remove_prefix(1);
+        pattern = line;
+        return !pattern.empty();
+    }
+
+    constexpr bool matches(std::string_view rel_path, bool is_dir) const {
+        if (dir_only && !is_dir) return false;
+        if (anchored) return wildmatch(pattern, rel_path);
+        const std::size_t slash = rel_path.rfind('/');
+        return wildmatch(pattern, slash == std::string_view::npos ? rel_path : rel_path.substr(slash + 1));
+    }
+};
+
+// Ordered .gitignore rules: the last matching rule decides, as in git.
+class GitignoreRules {
+    std::vector<GitignoreRule> rules_;
+
+public:
+    constexpr void add_line(std::string_view line) {
+        GitignoreRule rule;
+        if (rule.parse(line)) rules_.push_back(std::move(rule));
+    }
+
+    bool load(const std::string& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) return false;
+        std::string line;
+        while (std::getline(file, line)) add_line(line);
+        return true;
+    }
+
+    constexpr bool empty() const { return rules_.empty(); }
+
+    constexpr bool ignored(std::string_view rel_path, bool is_dir) const {
+        for (auto it = rules_.rbegin(); it != rules_.rend(); ++it)
+            if (it->matches(rel_path, is_dir)) return !it->negated;
+        return false;
+    }
+};
+
+namespace detail {
+constexpr bool gitignored(std::initializer_list<std::string_view> lines, std::string_view path, bool is_dir = false) {
+    GitignoreRules rules;
+    for (const auto line : lines) rules.add_line(line);
+    return rules.ignored(path, is_dir);
+}
+} // namespace detail
+
+// Compile-time checks against git's documented behavior
+static_assert(detail::gitignored({"*.log"}, "a/b/debug.log"));                     // no slash: any depth
+static_assert(detail::gitignored({"build/"}, "src/build", true));                  // trailing slash: directories...
+static_assert(!detail::gitignored({"build/"}, "src/build"));                       // ...only
+static_assert(detail::gitignored({"/dist"}, "dist") && !detail::gitignored({"/dist"}, "app/dist")); // rooted
+static_assert(detail::gitignored({"doc/frotz"}, "doc/frotz") && !detail::gitignored({"doc/frotz"}, "a/doc/frotz"));
+static_assert(detail::gitignored({"**/cache"}, "x/y/cache", true));
+static_assert(!detail::gitignored({"*.log", "!keep.log"}, "logs/keep.log"));       // last match wins
+static_assert(detail::gitignored({"!keep.log", "*.log"}, "keep.log"));
+static_assert(detail::gitignored({"name\\ "}, "name ") && detail::gitignored({"name   "}, "name"));
+static_assert(detail::gitignored({"\\!bang"}, "!bang") && !detail::gitignored({"# comment"}, "# comment"));
+static_assert(detail::gitignored({"[Bb]in/"}, "Bin", true) && !detail::gitignored({"[Bb]in/"}, "bin.txt"));
+
 struct PatternRule {
     bool is_negated = false; // Starts with !
     bool is_regex = false;
@@ -105,9 +315,11 @@ struct PatternRule {
     }
 };
 
+// Combines command-line rules (-e/-i: anchored globs or /regex/) with .gitignore rules.
 class FilterMatcher {
     std::vector<PatternRule> includes;
     std::vector<PatternRule> excludes;
+    GitignoreRules gitignore;
 
 public:
     void add_exclude(std::string_view pattern) {
@@ -120,32 +332,25 @@ public:
         if (!rule.raw_pattern.empty()) includes.push_back(std::move(rule));
     }
 
-    void load_gitignore(const std::string& filepath) {
-        std::ifstream file(filepath);
-        if (!file.is_open()) return;
-        std::string line;
-        while (std::getline(file, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            if (line[0] == '!') {
-                add_include(std::string_view(line).substr(1));
-            } else {
-                add_exclude(line);
-            }
-        }
-    }
+    // Appends the rules of a .gitignore-style file; later files take precedence.
+    bool load_gitignore(const std::string& filepath) { return gitignore.load(filepath); }
 
     bool has_includes() const { return !includes.empty(); }
 
-    // Returns true if the path should be excluded
-    bool is_excluded(std::string_view relative_path) const {
-        // If explicitly included by include rules, do not exclude
+    // `parent_excluded`: an ancestor directory is excluded. As in git, nothing below an
+    // excluded directory can be re-included by a .gitignore "!" rule; only -i can.
+    bool is_excluded(std::string_view relative_path, bool is_dir, bool parent_excluded = false) const {
         for (const auto& inc : includes) {
             if (inc.matches(relative_path)) return false;
         }
+        if (parent_excluded) return true;
+        // Like git, never treat a repository's own .git directory (or a submodule's .git file) as content.
+        const std::size_t slash = relative_path.rfind('/');
+        if (relative_path.substr(slash == std::string_view::npos ? 0 : slash + 1) == ".git") return true;
         for (const auto& exc : excludes) {
             if (exc.matches(relative_path)) return true;
         }
-        return false;
+        return gitignore.ignored(relative_path, is_dir);
     }
 };
 

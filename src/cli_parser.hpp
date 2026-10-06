@@ -1,11 +1,14 @@
 #ifndef CLI_PARSER_HPP
 #define CLI_PARSER_HPP
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <print>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <vector>
 #include "fira_code_font.hpp"
 #include "renamer.hpp"
 #include "terminal_style.hpp"
@@ -56,10 +59,16 @@ inline void print_help(const char* prog_name) {
     std::println("      --flatten-regex /rx/ Selective flattening for paths matching regex /rx/");
     std::println();
     std::println("{}", heading("FILTERING & EXCLUSIONS (.gitignore & globs vs regex):"));
-    std::println("  -e, --exclude <pattern>  Exclude pattern (Glob: *.log, **/*.o or Regex: /^test_.*/i)");
-    std::println("                           Excluded directories are skipped entirely (unless -i rules exist)");
-    std::println("  -i, --include <pattern>  Include pattern (Glob or Regex)");
-    std::println("      --gitignore [file]   Load exclude rules from .gitignore file");
+    std::println("  -e, --exclude <pattern>  Exclude pattern matched against the whole relative path");
+    std::println("                           (Glob: *.log, **/*.o or Regex: /^test_.*/i)");
+    std::println("  -i, --include <pattern>  Include pattern (Glob or Regex); overrides every exclusion");
+    std::println("                           Everything inside an excluded directory is excluded too");
+    std::println("      --gitignore [file]   Also apply a .gitignore-style file (default: ./.gitignore)");
+    std::println("      --no-gitignore       Don't apply the target directory's own .gitignore");
+    std::println("                           .gitignore rules follow git: no-slash patterns match at any");
+    std::println("                           depth, '/x' is rooted, 'x/' matches directories, '!' re-includes");
+    std::println("                           (last match wins); patterns are relative to the target directory");
+    std::println("                           .git directories/files are always skipped (unless matched by -i)");
     std::println();
     std::println("{}", heading("EXECUTION CONTROLS:"));
     std::println("  -d, --dry-run            Simulate operations without modifying filesystem");
@@ -83,10 +92,8 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
     should_exit = false;
     std::string_view color_mode = "auto";
     bool want_help = false, want_font = false;
-
-    if (fs::exists(".gitignore")) {
-        opts.filter.load_gitignore(".gitignore");
-    }
+    bool auto_gitignore = true;
+    std::vector<fs::path> gitignore_files;
 
     const auto set_case = [&](CaseStyle style) {
         opts.case_style = style;
@@ -134,11 +141,12 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
         } else if ((arg == "-i" || arg == "--include") && has_value) {
             opts.filter.add_include(argv[++i]);
         } else if (arg == "--gitignore") {
-            std::string gi_path = ".gitignore";
-            if (has_value && argv[i + 1][0] != '-') {
-                gi_path = argv[++i];
-            }
-            opts.filter.load_gitignore(gi_path);
+            // A directory is never taken as the value, so "--gitignore <dir>" keeps <dir> as the target.
+            std::error_code ec;
+            if (has_value && argv[i + 1][0] != '-' && !fs::is_directory(argv[i + 1], ec)) gitignore_files.emplace_back(argv[++i]);
+            else gitignore_files.emplace_back(".gitignore");
+        } else if (arg == "--no-gitignore") {
+            auto_gitignore = false;
         } else if (arg == "-d" || arg == "--dry-run") {
             opts.dry_run = true;
         } else if (arg == "--no-recursive") {
@@ -151,6 +159,19 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
     }
 
     term::init_terminal(color_mode);
+
+    // Explicit files first, then the target directory's own .gitignore, which (as in git)
+    // takes precedence. All patterns are matched relative to the target directory.
+    for (const fs::path& file : gitignore_files) {
+        if (!opts.filter.load_gitignore(file.string()))
+            std::println(stderr, "warning: cannot read gitignore file {}", file.string());
+    }
+    if (auto_gitignore) {
+        const fs::path own = opts.target_dir / ".gitignore";
+        std::error_code ec;
+        const bool listed = std::ranges::any_of(gitignore_files, [&](const fs::path& f) { return fs::equivalent(f, own, ec); });
+        if (!listed && fs::is_regular_file(own, ec)) opts.filter.load_gitignore(own.string());
+    }
 
     if (want_help || want_font) {
         if (want_help) print_help(argv[0]);

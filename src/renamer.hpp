@@ -61,18 +61,36 @@ class TransformerEngine {
         dashboard.log(std::move(line), term::Stream::Err);
     }
 
-    // Excluded directories are pruned instead of walked (unless include rules could re-admit children).
+    // Visits every entry with its root-relative path and exclusion verdict. Excluded
+    // directories are pruned; when -i rules could re-admit something below them they are
+    // walked instead, with the exclusion inherited by their contents.
     template <typename Visit>
     void walk(const fs::path& root, bool recursive, Visit&& visit) {
         const bool prune = !opts.filter.has_includes();
+        std::vector<char> excluded_at_depth; // verdict of the directory currently open at each depth
+        auto consider = [&](const fs::directory_entry& entry, int depth) {
+            std::error_code ec;
+            const bool is_dir = entry.is_directory(ec) && !entry.is_symlink(ec);
+            const std::string rel = entry.path().lexically_relative(root).string();
+            const auto parent = static_cast<std::size_t>(depth) - 1;
+            const bool parent_excluded = depth > 0 && parent < excluded_at_depth.size() && excluded_at_depth[parent];
+            const bool excluded = opts.filter.is_excluded(rel, is_dir, parent_excluded);
+            if (is_dir) {
+                excluded_at_depth.resize(static_cast<std::size_t>(depth) + 1);
+                excluded_at_depth.back() = excluded;
+            }
+            if (excluded) stats.excluded_items++;
+            visit(entry, std::string_view(rel), is_dir, excluded);
+            return is_dir && excluded;
+        };
         std::error_code ec;
         if (!recursive) {
             for (fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
-                visit(*it, [] {});
+                consider(*it, 0);
         } else {
             fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
             for (; !ec && it != end; it.increment(ec))
-                visit(*it, [&] { if (prune) it.disable_recursion_pending(); });
+                if (consider(*it, it.depth()) && prune) it.disable_recursion_pending();
         }
         if (ec) report_error(std::format("Error scanning {}: {}", root.string(), ec.message()));
     }
@@ -109,18 +127,11 @@ private:
     void execute_flattening(const fs::path& root) {
         if (!opts.recursive) return;
         std::vector<fs::path> files_to_flatten;
-        walk(root, true, [&](const fs::directory_entry& entry, auto&& prune) {
-            const fs::path rel = entry.path().lexically_relative(root);
-            const std::string rel_str = rel.string();
+        walk(root, true, [&](const fs::directory_entry& entry, std::string_view rel, bool is_dir, bool excluded) {
+            if (excluded || is_dir || rel.find('/') == std::string_view::npos) return;
             std::error_code ec;
-            const bool is_dir = entry.is_directory(ec) && !entry.is_symlink(ec);
-            if (opts.filter.is_excluded(rel_str)) {
-                stats.excluded_items++;
-                if (is_dir) prune();
-                return;
-            }
-            if (is_dir || !rel.has_parent_path() || !(entry.is_regular_file(ec) || entry.is_symlink(ec))) return;
-            if (!opts.flatten_regex.empty() && flatten_rx_spec.valid && !std::regex_search(rel_str, flatten_rx_spec.rx)) return;
+            if (!(entry.is_regular_file(ec) || entry.is_symlink(ec))) return;
+            if (!opts.flatten_regex.empty() && flatten_rx_spec.valid && !std::regex_search(rel.begin(), rel.end(), flatten_rx_spec.rx)) return;
             files_to_flatten.push_back(entry.path());
         });
 
@@ -192,17 +203,10 @@ private:
         };
         std::vector<Item> items;
 
-        walk(root, opts.recursive, [&](const fs::directory_entry& entry, auto&& prune) {
-            std::error_code ec;
-            const bool is_dir = entry.is_directory(ec) && !entry.is_symlink(ec);
+        walk(root, opts.recursive, [&](const fs::directory_entry& entry, std::string_view, bool is_dir, bool excluded) {
             if (is_dir) stats.scanned_dirs++;
             else stats.scanned_files++;
-            if (opts.filter.is_excluded(entry.path().lexically_relative(root).string())) {
-                stats.excluded_items++;
-                if (is_dir) prune();
-                return;
-            }
-            items.push_back({entry, entry.path().native().size(), is_dir});
+            if (!excluded) items.push_back({entry, entry.path().native().size(), is_dir});
         });
 
         std::ranges::sort(items, std::greater{}, &Item::sort_key);
