@@ -22,8 +22,8 @@ inline void render_header() {
     if (g_color_mode == ColorMode::Full) {
         const int cell_w = g_term.cell_width(), cell_h = g_term.cell_height();
         const int width = std::min(g_term.cols - 1, 72) * cell_w;
-        const int height = 3 * cell_h;
-        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0");
+        const int height = sixel::kBannerRows * cell_h;
+        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0", g_term.background);
         std::print("{}", place_image(sixel::encode(banner), height));
         std::println();
         return;

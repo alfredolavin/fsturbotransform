@@ -53,6 +53,7 @@ inline void init_terminal(std::string_view requested) {
     if (ColorMode forced{}; parse_color_mode(requested, forced)) {
         g_color_mode = forced;
         if (forced != ColorMode::None) g_term = probe_terminal(is_tty() && forced == ColorMode::Full);
+        sixel::set_palette_size(g_term.color_registers);
         return;
     }
     if (!is_tty()) {
@@ -60,6 +61,7 @@ inline void init_terminal(std::string_view requested) {
         return;
     }
     g_term = probe_terminal(true);
+    sixel::set_palette_size(g_term.color_registers);
     const char* term_env = std::getenv("TERM");
     const std::string_view term_name = term_env ? term_env : "";
     if (g_term.sixel) g_color_mode = ColorMode::Full;

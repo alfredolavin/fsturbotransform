@@ -118,19 +118,26 @@ public:
 
 // --- Palette quantization ------------------------------------------------------
 
-inline constexpr std::uint8_t kTransparent = 255;
-inline constexpr std::size_t kMaxColors = 255;
+using PaletteIndex = std::uint16_t;
+inline constexpr PaletteIndex kTransparent = 0xFFFF;
+inline constexpr std::size_t kMaxColors = 255; // compile-time icons
+
+// Colour registers a runtime image may use: what the terminal offers (XTSMGRAPHICS), up to a cap
+// that keeps palettes, quantization and frames affordable.
+inline constexpr std::size_t kPaletteCap = 1024;
+inline std::size_t g_palette_size = 256;
+inline void set_palette_size(int registers) { g_palette_size = static_cast<std::size_t>(std::clamp(registers, 2, static_cast<int>(kPaletteCap))); }
 
 struct IndexedImage {
     int width = 0;
     int height = 0;
     std::vector<Rgb> palette;
-    std::vector<std::uint8_t> index; // kTransparent marks pixels left untouched
+    std::vector<PaletteIndex> index; // kTransparent marks pixels left untouched
 };
 
 // Exact palette (≤255 distinct colors). Used for compile-time icons.
 constexpr std::optional<IndexedImage> quantize_exact(const Canvas& c) {
-    IndexedImage img{c.width(), c.height(), {}, std::vector<std::uint8_t>(c.pixels().size(), kTransparent)};
+    IndexedImage img{c.width(), c.height(), {}, std::vector<PaletteIndex>(c.pixels().size(), kTransparent)};
     for (std::size_t i = 0; i < c.pixels().size(); ++i) {
         const Rgba p = c.pixels()[i];
         if (p.a < 128) continue;
@@ -138,21 +145,60 @@ constexpr std::optional<IndexedImage> quantize_exact(const Canvas& c) {
         if (it == img.palette.end()) {
             if (img.palette.size() == kMaxColors) return std::nullopt;
             img.palette.push_back(p.rgb());
-            img.index[i] = static_cast<std::uint8_t>(img.palette.size() - 1);
+            img.index[i] = static_cast<PaletteIndex>(img.palette.size() - 1);
         } else {
-            img.index[i] = static_cast<std::uint8_t>(it - img.palette.begin());
+            img.index[i] = static_cast<PaletteIndex>(it - img.palette.begin());
         }
     }
     return img;
 }
 
-// 15-bit histogram + population-weighted median cut down to ≤255 colors.
-inline IndexedImage quantize_adaptive(const Canvas& c) {
+// Lossless 24-bit palette when the image has at most `limit` distinct colors (a hash table of
+// the colors seen so far; it gives up as soon as the limit is exceeded).
+inline std::optional<IndexedImage> quantize_lossless(const Canvas& c, std::size_t limit) {
+    constexpr std::uint32_t kEmpty = 0xFFFFFFFFu; // a 24-bit key never equals it
+    std::size_t slots = 16;
+    while (slots < limit * 4) slots <<= 1; // load factor <= 1/4
+    thread_local std::vector<std::uint32_t> keys;
+    thread_local std::vector<PaletteIndex> values;
+    keys.assign(slots, kEmpty);
+    values.resize(slots);
+
+    const auto px = c.pixels();
+    IndexedImage img{c.width(), c.height(), {}, std::vector<PaletteIndex>(px.size(), kTransparent)};
+    std::uint32_t last_key = kEmpty;
+    PaletteIndex last_index = 0;
+    for (std::size_t i = 0; i < px.size(); ++i) {
+        const Rgba p = px[i];
+        if (p.a < 128) continue;
+        const std::uint32_t key = static_cast<std::uint32_t>(p.r) << 16 | static_cast<std::uint32_t>(p.g) << 8 | p.b;
+        if (key == last_key) { // runs of one color (backgrounds) skip the table
+            img.index[i] = last_index;
+            continue;
+        }
+        std::size_t slot = (key * 0x9E3779B1u) & (slots - 1);
+        while (keys[slot] != kEmpty && keys[slot] != key) slot = (slot + 1) & (slots - 1);
+        if (keys[slot] == kEmpty) {
+            if (img.palette.size() == limit) return std::nullopt;
+            keys[slot] = key;
+            values[slot] = static_cast<PaletteIndex>(img.palette.size());
+            img.palette.push_back(p.rgb());
+        }
+        last_key = key;
+        last_index = values[slot];
+        img.index[i] = last_index;
+    }
+    return img;
+}
+
+// 18-bit histogram (6 bits per channel) + population-weighted median cut down to ≤ max_colors.
+// Each palette color is the average of the pixels it stands for, so it is finer than the bins.
+inline IndexedImage quantize_adaptive(const Canvas& c, std::size_t max_colors) {
     struct Bin {
         std::uint32_t count = 0, r = 0, g = 0, b = 0;
     };
     struct Entry {
-        std::uint16_t key;
+        std::uint32_t key;
         std::uint32_t count;
         Rgb avg;
     };
@@ -161,13 +207,12 @@ inline IndexedImage quantize_adaptive(const Canvas& c) {
         std::uint64_t score;
         int channel;
     };
-    thread_local std::vector<Bin> hist(1 << 15);
-    thread_local std::vector<std::uint8_t> lut(1 << 15);
+    constexpr std::size_t kBins = 1u << 18;
+    thread_local std::vector<Bin> hist(kBins);
+    thread_local std::vector<PaletteIndex> lut(kBins);
 
     const auto px = c.pixels();
-    auto key_of = [](Rgba p) {
-        return static_cast<std::uint16_t>((p.r >> 3) << 10 | (p.g >> 3) << 5 | (p.b >> 3));
-    };
+    auto key_of = [](Rgba p) { return static_cast<std::uint32_t>((p.r >> 2) << 12 | (p.g >> 2) << 6 | (p.b >> 2)); };
 
     std::vector<Entry> entries;
     for (const Rgba p : px) {
@@ -185,13 +230,13 @@ inline IndexedImage quantize_adaptive(const Canvas& c) {
         b = {};
     }
 
-    IndexedImage img{c.width(), c.height(), {}, std::vector<std::uint8_t>(px.size(), kTransparent)};
+    IndexedImage img{c.width(), c.height(), {}, std::vector<PaletteIndex>(px.size(), kTransparent)};
     auto channel = [](const Entry& e, int ch) { return ch == 0 ? e.avg.r : ch == 1 ? e.avg.g : e.avg.b; };
 
-    if (entries.size() <= kMaxColors) {
+    if (entries.size() <= max_colors) {
         for (std::size_t i = 0; i < entries.size(); ++i) {
             img.palette.push_back(entries[i].avg);
-            lut[entries[i].key] = static_cast<std::uint8_t>(i);
+            lut[entries[i].key] = static_cast<PaletteIndex>(i);
         }
     } else {
         auto make_box = [&](std::size_t begin, std::size_t end) {
@@ -217,7 +262,7 @@ inline IndexedImage quantize_adaptive(const Canvas& c) {
         };
 
         std::vector<Box> boxes{make_box(0, entries.size())};
-        while (boxes.size() < kMaxColors) {
+        while (boxes.size() < max_colors) {
             const auto best = std::ranges::max_element(boxes, {}, &Box::score);
             if (best->score == 0) break;
             const Box box = *best;
@@ -242,7 +287,7 @@ inline IndexedImage quantize_adaptive(const Canvas& c) {
                 g += std::uint64_t{entries[i].avg.g} * entries[i].count;
                 b += std::uint64_t{entries[i].avg.b} * entries[i].count;
                 n += entries[i].count;
-                lut[entries[i].key] = static_cast<std::uint8_t>(img.palette.size());
+                lut[entries[i].key] = static_cast<PaletteIndex>(img.palette.size());
             }
             img.palette.push_back({static_cast<std::uint8_t>(r / n), static_cast<std::uint8_t>(g / n), static_cast<std::uint8_t>(b / n)});
         }
@@ -253,11 +298,18 @@ inline IndexedImage quantize_adaptive(const Canvas& c) {
     return img;
 }
 
+// At run time: every distinct color when they fit in the terminal's registers (full 24-bit, no
+// loss at all), otherwise the best palette of that size.
+inline IndexedImage quantize_runtime(const Canvas& c, std::size_t registers) {
+    if (auto exact = quantize_lossless(c, registers)) return std::move(*exact);
+    return quantize_adaptive(c, registers);
+}
+
 constexpr IndexedImage quantize(const Canvas& c) {
     if consteval {
         return quantize_exact(c).value(); // compile-time images must stay within one palette
     } else {
-        return quantize_adaptive(c);
+        return quantize_runtime(c, g_palette_size);
     }
 }
 
@@ -286,6 +338,7 @@ constexpr void append_run(std::string& s, char ch, std::size_t n) {
 // Encodes 6-pixel bands; per band only the colors actually present are emitted,
 // each trimmed to its own [first, last] column span and run-length compressed.
 // Unset pixels are transparent (P2=1), so an opaque canvas fully repaints its area.
+// Colors are written the only way Sixel allows, as 0-100 percent per channel.
 constexpr std::string encode(const IndexedImage& img) {
     std::string out;
     const auto w = static_cast<std::size_t>(std::max(img.width, 0));
@@ -313,7 +366,7 @@ constexpr std::string encode(const IndexedImage& img) {
     std::vector<std::uint8_t> masks(nc * w, 0);
     std::vector<std::size_t> lo(nc, w);
     std::vector<std::ptrdiff_t> hi(nc, -1);
-    std::vector<std::uint8_t> used;
+    std::vector<PaletteIndex> used;
     used.reserve(nc);
 
     for (std::size_t y0 = 0; y0 < h; y0 += 6) {
@@ -321,24 +374,24 @@ constexpr std::string encode(const IndexedImage& img) {
         for (std::size_t dy = 0; dy < 6 && y0 + dy < h; ++dy) {
             const std::size_t row = (y0 + dy) * w;
             for (std::size_t x = 0; x < w; ++x) {
-                const std::uint8_t k = img.index[row + x];
+                const PaletteIndex k = img.index[row + x];
                 if (k == kTransparent) continue;
                 if (hi[k] < 0) used.push_back(k);
-                masks[k * w + x] |= static_cast<std::uint8_t>(1u << dy);
+                masks[std::size_t{k} * w + x] |= static_cast<std::uint8_t>(1u << dy);
                 lo[k] = std::min(lo[k], x);
                 hi[k] = std::max(hi[k], static_cast<std::ptrdiff_t>(x));
             }
         }
         const bool last_band = y0 + 6 >= h;
         for (std::size_t u = 0; u < used.size(); ++u) {
-            const std::uint8_t k = used[u];
+            const PaletteIndex k = used[u];
             out.push_back('#');
             append_uint(out, k);
             append_run(out, '?', lo[k]);
             char prev = 0;
             std::size_t run = 0;
             for (std::size_t x = lo[k]; x <= static_cast<std::size_t>(hi[k]); ++x) {
-                std::uint8_t& m = masks[k * w + x];
+                std::uint8_t& m = masks[std::size_t{k} * w + x];
                 const char ch = static_cast<char>(63 + m);
                 m = 0;
                 if (ch == prev) {

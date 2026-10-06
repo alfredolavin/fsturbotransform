@@ -27,6 +27,7 @@ struct TermInfo {
     int cell_w = 0; // pixels; 0 = unknown
     int cell_h = 0;
     bool sixel = false;
+    int color_registers = 256; // Sixel colour registers; 256 when the terminal does not say
     std::optional<Rgb> background;
 
     // Conservative fallbacks keep reserved rows >= image rows when the size is unknown.
@@ -101,7 +102,20 @@ constexpr std::optional<std::pair<int, int>> find_cell_size(std::string_view r) 
     return std::pair{p[2], p[1]};
 }
 
+// XTSMGRAPHICS reply for the Sixel colour registers: ESC [ ? 1 ; 0 ; count S
+constexpr std::optional<int> find_color_registers(std::string_view r) {
+    const std::size_t at = r.find("\x1b[?1;0;");
+    if (at == std::string_view::npos) return std::nullopt;
+    const std::size_t end = r.find_first_not_of("0123456789", at + 7);
+    if (end == at + 7 || end == std::string_view::npos || r[end] != 'S') return std::nullopt;
+    const auto p = parse_params(r.substr(at + 7, end - at - 7));
+    if (p.size() != 1 || p[0] <= 0) return std::nullopt;
+    return p[0];
+}
+
 static_assert(find_da1("\x1b[?62;4;22c").value() == "62;4;22");
+static_assert(find_color_registers("\x1b[?1;0;1024S") == 1024 && find_color_registers("junk\x1b[?1;0;256S\x1b[?62;4c") == 256);
+static_assert(!find_color_registers("\x1b[?1;3;0S") && !find_color_registers("\x1b[?1;0;S") && !find_color_registers("\x1b[?2;0;5S"));
 static_assert(!find_da1("\x1b[?62;4"));
 static_assert(find_background("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\") == Rgb{30, 30, 46});
 static_assert(find_background("\x1b]11;rgb:ff/80/00\a") == Rgb{255, 128, 0});
@@ -135,7 +149,8 @@ inline TermInfo probe_terminal(bool query) {
     tcsetattr(fd, TCSANOW, &raw);
 
     // DA1 goes last: every terminal answers it, so its reply marks the end of the batch.
-    constexpr std::string_view queries = "\x1b]11;?\x1b\\\x1b[16t\x1b[c";
+    // Queries: background colour, cell size, number of Sixel colour registers, then DA1.
+    constexpr std::string_view queries = "\x1b]11;?\x1b\\\x1b[16t\x1b[?1;1;0S\x1b[c";
     std::string reply;
     if (write(fd, queries.data(), queries.size()) == static_cast<ssize_t>(queries.size())) {
         using clock = std::chrono::steady_clock;
@@ -161,6 +176,7 @@ inline TermInfo probe_terminal(bool query) {
         info.cell_w = cell->first;
         info.cell_h = cell->second;
     }
+    if (const auto registers = detail::find_color_registers(reply)) info.color_registers = *registers;
     info.background = detail::find_background(reply);
     return info;
 }

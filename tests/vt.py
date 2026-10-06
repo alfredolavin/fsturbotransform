@@ -4,7 +4,8 @@ everything ends up on screen: printable text, CR/LF with scrolling, cursor movem
 DECSC/DECRC, and Sixel images (only their position and height are tracked). It also answers the
 queries the program's terminal probe sends (background colour, cell size, DA1 with Sixel).
 
-Library use:  screen, status = vt.run(argv, rows, cols, cell_w=10, cell_h=20)
+Library use:  screen, status = vt.run(argv, rows, cols, cell_w=10, cell_h=20, registers=1024)
+              registers is the Sixel colour register count it reports (None: it does not answer)
 Command line: tests/vt.py ROWS COLS COMMAND...   (prints the final screen)
 """
 import codecs
@@ -21,17 +22,19 @@ import unicodedata
 
 
 class Screen:
-    def __init__(self, rows, cols, cell_w, cell_h):
+    def __init__(self, rows, cols, cell_w, cell_h, registers=1024):
         self.rows, self.cols, self.cell_w, self.cell_h = rows, cols, cell_w, cell_h
+        self.registers = registers
         self.grid = [[" "] * cols for _ in range(rows)]
         self.r = self.c = 0
         self.saved = (0, 0)
         self.wrap_pending = False
         self.scrolled = 0
-        self.images = []  # {"top", "left", "rows", "height"}: top is relative to the screen, may go negative
+        self.images = []  # {"top", "left", "rows", "height", "colors"}: top is relative to the screen, may go negative
         self.replies = b""
         self._state = "n"
         self._buf = ""
+        self._dcs_parts = []
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     # --- output -------------------------------------------------------------------------
@@ -63,7 +66,11 @@ class Screen:
             self.wrap_pending = True
 
     def feed(self, data):
-        for ch in self._decoder.decode(data):
+        text = self._decoder.decode(data)
+        i, n = 0, len(text)
+        while i < n:
+            ch = text[i]
+            i += 1
             state = self._state
             if state == "n":
                 if ch == "\x1b":
@@ -83,7 +90,7 @@ class Screen:
                 elif ch == "]":
                     self._state = "o"
                 elif ch == "P":
-                    self._state = "d"
+                    self._state, self._dcs_parts = "d", []
                 elif ch == "7":
                     self.saved = (self.r, self.c)
                 elif ch == "8":
@@ -106,14 +113,19 @@ class Screen:
             elif state == "oe":
                 self._osc(self._buf)
                 self._state, self._buf = "n", ""
-            elif state == "d":
-                if ch == "\x1b":
+            elif state == "d":  # the DCS payload (a Sixel image) runs to ESC \
+                end = text.find("\x1b", i - 1)
+                if end < 0:
+                    self._dcs_parts.append(text[i - 1:])
+                    i = n
+                else:
+                    self._dcs_parts.append(text[i - 1:end])
+                    i = end + 1
                     self._state = "de"
-                elif len(self._buf) < 300:  # the raster attributes come first; the pixel data is not needed
-                    self._buf += ch
             elif state == "de":
-                self._dcs(self._buf)
-                self._state, self._buf = "n", ""
+                self._dcs("".join(self._dcs_parts))
+                self._dcs_parts = []
+                self._state = "n"
 
     # --- sequences ----------------------------------------------------------------------
     def _csi(self, params, final):
@@ -150,6 +162,8 @@ class Screen:
                 self.grid[self.r][col] = " "
         elif final == "t" and first == 16:
             self.replies += f"\x1b[6;{self.cell_h};{self.cell_w}t".encode()
+        elif final == "S" and private and nums[:3] == [1, 1, 0] and self.registers:
+            self.replies += f"\x1b[?1;0;{self.registers}S".encode()
         elif final == "c" and not private and (first is None or first == 0):
             self.replies += b"\x1b[?62;4;22c"  # a Sixel-capable terminal
 
@@ -161,7 +175,7 @@ class Screen:
         m = re.match(r'^[\d;]*q"(\d+);(\d+);(\d+);(\d+)', text)
         if m:
             height = int(m.group(4))
-            self.images.append({"top": self.r, "left": self.c, "rows": math.ceil(height / self.cell_h), "height": height})
+            self.images.append({"top": self.r, "left": self.c, "rows": math.ceil(height / self.cell_h), "height": height, "colors": len(re.findall(r"#\d+;2;", text))})
 
     # --- inspection ---------------------------------------------------------------------
     def lines(self):
@@ -173,9 +187,9 @@ class Screen:
         return "\n".join(out)
 
 
-def run(argv, rows, cols, cell_w=10, cell_h=20, cwd=None, timeout=30):
+def run(argv, rows, cols, cell_w=10, cell_h=20, cwd=None, timeout=30, registers=1024):
     """Returns (Screen, exit status)."""
-    screen = Screen(rows, cols, cell_w, cell_h)
+    screen = Screen(rows, cols, cell_w, cell_h, registers)
     master, slave = os.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * cell_w, rows * cell_h))
     pid = os.fork()

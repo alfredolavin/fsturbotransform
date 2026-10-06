@@ -133,10 +133,10 @@ with tempfile.TemporaryDirectory() as root:
 # --- Sixel -----------------------------------------------------------------------------------
 
 
-def run_sixel(rows, cols, *flags):
+def run_sixel(rows, cols, *flags, registers=1024):
     with tempfile.TemporaryDirectory() as root:
         make_tree(root)
-        return vt.run([BIN, "--color=full", "--dry-run", "--no-gitignore", *flags, root], rows, cols, cell_w=10, cell_h=20)
+        return vt.run([BIN, "--color=full", "--dry-run", "--no-gitignore", *flags, root], rows, cols, cell_w=10, cell_h=20, registers=registers)
 
 
 scr, code = run_sixel(50, 100)
@@ -161,6 +161,17 @@ check("sixel --no-report: no report image", frame and all(i["rows"] == frame["ro
 scr, _ = run_sixel(24, 100)
 frame = scr.images[-1] if scr.images else None
 check("sixel 24 rows: the frame fills the screen but one row and a spare", frame and frame["top"] == 0 and frame["rows"] == 24 - 2, str(scr.images))
+
+# Colour: the program asks the terminal how many Sixel colour registers it has and uses them all.
+# The banner (a gradient with a glowing icon) has thousands of distinct colours, so it always uses
+# every register; images with fewer colours are sent exactly, with no quantization.
+for registers, expected in ((1024, 1024), (256, 256), (None, 256), (64, 64), (4096, 1024)):
+    scr, code = run_sixel(50, 100, registers=registers)
+    banner = scr.images[0] if scr.images else None
+    check(f"sixel colours: terminal reports {registers} registers", code == 0 and banner and banner["colors"] == expected, f"banner {banner}, exit {code}")
+    if registers == 1024:
+        frames = [i for i in scr.images[1:] if i["rows"] > 5]
+        check("sixel colours: every image fits the registers", all(i["colors"] <= 1024 for i in scr.images), str([i["colors"] for i in scr.images]))
 
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
