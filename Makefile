@@ -1,4 +1,8 @@
-CXX = g++
+# C++26 with #embed requires GCC >= 15 or Clang >= 19. Unless CXX is given explicitly,
+# pick the first suitable compiler on PATH (an unversioned g++/clang++ is the last resort).
+ifeq ($(origin CXX),default)
+CXX := $(firstword $(foreach c,g++-16 g++-15 clang++-21 clang++-20 clang++-19 g++ clang++,$(if $(shell command -v $(c) 2>/dev/null),$(c))))
+endif
 CXXFLAGS = -std=c++26 -O3 -march=native -flto -ffast-math -pthread -Wall -Wextra -Isrc
 LDFLAGS = -static-libstdc++ -static-libgcc -pthread -flto
 
@@ -7,10 +11,11 @@ BINDIR ?= $(PREFIX)/bin
 
 TARGET = fsturbotransform
 SRC = src/main.cpp
+DEPS = $(SRC) $(wildcard src/*.hpp) src/FiraCode-Regular.ttf
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) src/fira_code_font.hpp src/terminal_style.hpp src/case_converter.hpp src/matcher.hpp src/renamer.hpp src/cli_parser.hpp src/sixel_renderer.hpp
+$(TARGET): $(DEPS)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 install: $(TARGET)

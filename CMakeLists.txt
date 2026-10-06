@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.25)
 project(fsturbotransform VERSION 2.0 LANGUAGES CXX)
 
+# C++26 with #embed: GCC >= 15 or Clang >= 19
+if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15) OR
+   (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19))
+    message(FATAL_ERROR "fsturbotransform needs C++26 #embed: GCC >= 15 or Clang >= 19 "
+                        "(found ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}). "
+                        "Select one with -DCMAKE_CXX_COMPILER=...")
+endif()
+
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -32,17 +40,25 @@ set(SOURCES
 )
 
 set(HEADERS
-    src/fira_code_font.hpp
-    src/terminal_style.hpp
     src/case_converter.hpp
+    src/cli_parser.hpp
+    src/color.hpp
+    src/dashboard.hpp
+    src/fira_code_font.hpp
     src/matcher.hpp
     src/renamer.hpp
-    src/cli_parser.hpp
     src/sixel_renderer.hpp
+    src/terminal_probe.hpp
+    src/terminal_style.hpp
+    src/ttf_font.hpp
 )
 
 # Executable target
 add_executable(fsturbotransform ${SOURCES} ${HEADERS})
+
+# #embed is not tracked by every dependency scanner: rebuild when the font changes
+set_source_files_properties(src/main.cpp PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/FiraCode-Regular.ttf")
 
 # Include directories (needed for #embed to locate embedded assets)
 target_include_directories(fsturbotransform PRIVATE

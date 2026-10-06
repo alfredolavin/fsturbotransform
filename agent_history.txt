@@ -5,3 +5,4 @@ Task: Refactor src/fira_code_font.hpp to use C++26 #embed directive for FiraCode
 Task: Configure CMake build system (CMakeLists.txt) with FetchContent for dependencies and install target targeting ~/.local/bin
 Task: Enhance Sixel graphics engine for full graphical UI, in-place reused mini-console below gradient progress bar, suppress scrolling text output unless explicitly requested (--verbose), support all color modes (-c, --color=[full,none,simple,terminal])
 Task: Commit and push changes to git repository
+Task: Optimize for C++26 and apply the Sixel terminal output rule: full-graphics Sixel dashboard (gradient progress bar + Fira Code mini-terminal rasterized from the #embed font), compile-time Sixel icons, terminal capability probing, adaptive frame pacing

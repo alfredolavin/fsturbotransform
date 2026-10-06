@@ -1,13 +1,9 @@
 #ifndef CASE_CONVERTER_HPP
 #define CASE_CONVERTER_HPP
 
+#include <regex>
 #include <string>
 #include <string_view>
-#include <vector>
-#include <cctype>
-#include <algorithm>
-#include <regex>
-#include <functional>
 
 namespace fsturbo {
 
@@ -22,126 +18,72 @@ enum class CaseStyle {
     Title
 };
 
-// Split string into word tokens using C++ lambdas
+// Locale-independent ASCII classification (matches <cctype> in the "C" locale, but constexpr).
+namespace ascii {
+constexpr bool is_lower(char c) { return c >= 'a' && c <= 'z'; }
+constexpr bool is_upper(char c) { return c >= 'A' && c <= 'Z'; }
+constexpr bool is_digit(char c) { return c >= '0' && c <= '9'; }
+constexpr bool is_alnum(char c) { return is_lower(c) || is_upper(c) || is_digit(c); }
+constexpr char to_lower(char c) { return is_upper(c) ? static_cast<char>(c + ('a' - 'A')) : c; }
+constexpr char to_upper(char c) { return is_lower(c) ? static_cast<char>(c - ('a' - 'A')) : c; }
+} // namespace ascii
+
+// Split a name into word tokens (views into `name`): non-alphanumerics separate words,
+// and a lower->UPPER transition starts a new word ("myFile" -> "my", "File").
 template <typename F>
-inline void tokenize(std::string_view name, F&& callback) {
-    std::string current;
-    for (size_t i = 0; i < name.length(); ++i) {
-        char ch = name[i];
-        if (std::isalnum(static_cast<unsigned char>(ch))) {
-            // Check camelCase transition (e.g. "a" -> "B")
-            if (!current.empty() && std::islower(static_cast<unsigned char>(current.back())) &&
-                std::isupper(static_cast<unsigned char>(ch))) {
-                callback(current);
-                current.clear();
-            }
-            current.push_back(ch);
-        } else {
-            if (!current.empty()) {
-                callback(current);
-                current.clear();
-            }
+constexpr void tokenize(std::string_view name, F&& callback) {
+    std::size_t start = std::string_view::npos;
+    for (std::size_t i = 0; i < name.size(); ++i) {
+        const char ch = name[i];
+        if (!ascii::is_alnum(ch)) {
+            if (start != std::string_view::npos) callback(name.substr(start, i - start));
+            start = std::string_view::npos;
+        } else if (start == std::string_view::npos) {
+            start = i;
+        } else if (ascii::is_lower(name[i - 1]) && ascii::is_upper(ch)) {
+            callback(name.substr(start, i - start));
+            start = i;
         }
     }
-    if (!current.empty()) {
-        callback(current);
-    }
+    if (start != std::string_view::npos) callback(name.substr(start));
 }
 
-// Case transformers implemented via templates & lambdas
 struct CaseConverter {
-    static std::string to_lower(std::string_view input) {
+    static constexpr std::string to_lower(std::string_view input) {
         std::string res(input);
-        std::transform(res.begin(), res.end(), res.begin(), [](unsigned char c) { return std::tolower(c); });
+        for (char& c : res) c = ascii::to_lower(c);
         return res;
     }
 
-    static std::string to_upper(std::string_view input) {
+    static constexpr std::string to_upper(std::string_view input) {
         std::string res(input);
-        std::transform(res.begin(), res.end(), res.begin(), [](unsigned char c) { return std::toupper(c); });
+        for (char& c : res) c = ascii::to_upper(c);
         return res;
     }
 
-    static std::string to_snake(std::string_view input) {
-        std::vector<std::string> tokens;
-        tokenize(input, [&](std::string_view tok) {
-            tokens.push_back(to_lower(tok));
-        });
+    // Lower-cases every token, optionally capitalizes its first letter, and joins with `sep`.
+    static constexpr std::string join_words(std::string_view input, std::string_view sep, bool cap_first, bool cap_rest) {
         std::string res;
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            if (i > 0) res += "_";
-            res += tokens[i];
-        }
+        res.reserve(input.size() + 8);
+        bool first = true;
+        tokenize(input, [&](std::string_view tok) {
+            if (!first) res += sep;
+            const bool cap = first ? cap_first : cap_rest;
+            for (std::size_t i = 0; i < tok.size(); ++i) res.push_back(i == 0 && cap ? ascii::to_upper(tok[i]) : ascii::to_lower(tok[i]));
+            first = false;
+        });
         return res;
     }
 
-    static std::string to_camel(std::string_view input) {
-        std::vector<std::string> tokens;
-        tokenize(input, [&](std::string_view tok) {
-            tokens.push_back(to_lower(tok));
-        });
-        std::string res;
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            std::string t = tokens[i];
-            if (i == 0) {
-                res += t;
-            } else if (!t.empty()) {
-                t[0] = std::toupper(static_cast<unsigned char>(t[0]));
-                res += t;
-            }
-        }
-        return res;
-    }
-
-    static std::string to_pascal(std::string_view input) {
-        std::vector<std::string> tokens;
-        tokenize(input, [&](std::string_view tok) {
-            tokens.push_back(to_lower(tok));
-        });
-        std::string res;
-        for (const auto& tok : tokens) {
-            if (!tok.empty()) {
-                std::string t = tok;
-                t[0] = std::toupper(static_cast<unsigned char>(t[0]));
-                res += t;
-            }
-        }
-        return res;
-    }
-
-    static std::string to_kebab(std::string_view input) {
-        std::vector<std::string> tokens;
-        tokenize(input, [&](std::string_view tok) {
-            tokens.push_back(to_lower(tok));
-        });
-        std::string res;
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            if (i > 0) res += "-";
-            res += tokens[i];
-        }
-        return res;
-    }
-
-    static std::string to_title(std::string_view input) {
-        std::vector<std::string> tokens;
-        tokenize(input, [&](std::string_view tok) {
-            tokens.push_back(to_lower(tok));
-        });
-        std::string res;
-        for (size_t i = 0; i < tokens.size(); ++i) {
-            if (i > 0) res += " ";
-            std::string t = tokens[i];
-            if (!t.empty()) {
-                t[0] = std::toupper(static_cast<unsigned char>(t[0]));
-                res += t;
-            }
-        }
-        return res;
-    }
+    static constexpr std::string to_snake(std::string_view input) { return join_words(input, "_", false, false); }
+    static constexpr std::string to_camel(std::string_view input) { return join_words(input, "", false, true); }
+    static constexpr std::string to_pascal(std::string_view input) { return join_words(input, "", true, true); }
+    static constexpr std::string to_kebab(std::string_view input) { return join_words(input, "-", false, false); }
+    static constexpr std::string to_title(std::string_view input) { return join_words(input, " ", true, true); }
 
     // Generic transform dispatcher template
-    template<CaseStyle Style>
-    static std::string transform(std::string_view input) {
+    template <CaseStyle Style>
+    static constexpr std::string transform(std::string_view input) {
         if constexpr (Style == CaseStyle::Lower) return to_lower(input);
         else if constexpr (Style == CaseStyle::Upper) return to_upper(input);
         else if constexpr (Style == CaseStyle::Snake) return to_snake(input);
@@ -152,7 +94,7 @@ struct CaseConverter {
         else return std::string(input);
     }
 
-    static std::string transform_dynamic(std::string_view input, CaseStyle style) {
+    static constexpr std::string transform_dynamic(std::string_view input, CaseStyle style) {
         switch (style) {
             case CaseStyle::Lower: return to_lower(input);
             case CaseStyle::Upper: return to_upper(input);
@@ -166,95 +108,71 @@ struct CaseConverter {
     }
 };
 
+// Compile-time unit tests
+static_assert(CaseConverter::to_lower("ReadMe.TXT") == "readme.txt");
+static_assert(CaseConverter::to_upper("abc-1") == "ABC-1");
+static_assert(CaseConverter::to_snake("HelloWorld-foo bar") == "hello_world_foo_bar");
+static_assert(CaseConverter::to_camel("hello_world 2024") == "helloWorld2024");
+static_assert(CaseConverter::to_pascal("my file-name") == "MyFileName");
+static_assert(CaseConverter::to_kebab("MyFileName") == "my-file-name");
+static_assert(CaseConverter::to_title("quarterly_REPORT") == "Quarterly Report");
+static_assert(CaseConverter::transform<CaseStyle::Snake>("someName") == "some_name");
+
 // Generic Regex Replacer with Case Conversion syntax:
 // Supports:
 // \U -> uppercase rest of replacement
 // \L -> lowercase rest of replacement
 // \E -> end case modification
 // \C -> capitalize next char
-inline std::string apply_regex_replace(
-    const std::string& filename,
-    const std::regex& pattern,
-    const std::string& fmt
-) {
-    std::string result;
+// \N or $N -> capture group N (0-9)
+inline std::string apply_regex_replace(const std::string& filename, const std::regex& pattern, const std::string& fmt) {
     std::sregex_iterator begin(filename.begin(), filename.end(), pattern);
-    std::sregex_iterator end;
+    const std::sregex_iterator end;
+    if (begin == end) return filename;
 
-    if (begin == end) {
-        return filename;
-    }
-
-    size_t last_pos = 0;
+    std::string result;
+    result.reserve(filename.size() + fmt.size());
+    std::size_t last_pos = 0;
     for (auto it = begin; it != end; ++it) {
         const std::smatch& match = *it;
-        result.append(filename, last_pos, match.position() - last_pos);
+        result.append(filename, last_pos, static_cast<std::size_t>(match.position()) - last_pos);
 
-        std::string replaced;
         bool in_upper = false, in_lower = false, cap_next = false;
-
-        for (size_t i = 0; i < fmt.length(); ++i) {
-            if (fmt[i] == '\\' && i + 1 < fmt.length()) {
-                char next = fmt[i+1];
-                if (next == 'U') { in_upper = true; in_lower = false; i++; continue; }
-                if (next == 'L') { in_lower = true; in_upper = false; i++; continue; }
-                if (next == 'E') { in_upper = false; in_lower = false; i++; continue; }
-                if (next == 'C') { cap_next = true; i++; continue; }
-                if (std::isdigit(static_cast<unsigned char>(next))) {
-                    int grp = next - '0';
-                    if (grp < static_cast<int>(match.size())) {
-                        std::string gstr = match[grp].str();
-                        for (char gc : gstr) {
-                            if (cap_next) {
-                                replaced += std::toupper(static_cast<unsigned char>(gc));
-                                cap_next = false;
-                            } else if (in_upper) {
-                                replaced += std::toupper(static_cast<unsigned char>(gc));
-                            } else if (in_lower) {
-                                replaced += std::tolower(static_cast<unsigned char>(gc));
-                            } else {
-                                replaced += gc;
-                            }
-                        }
-                    }
-                    i++;
-                    continue;
-                }
-            } else if (fmt[i] == '$' && i + 1 < fmt.length() && std::isdigit(static_cast<unsigned char>(fmt[i+1]))) {
-                int grp = fmt[i+1] - '0';
-                if (grp < static_cast<int>(match.size())) {
-                    std::string gstr = match[grp].str();
-                    for (char gc : gstr) {
-                        if (cap_next) {
-                            replaced += std::toupper(static_cast<unsigned char>(gc));
-                            cap_next = false;
-                        } else if (in_upper) {
-                            replaced += std::toupper(static_cast<unsigned char>(gc));
-                        } else if (in_lower) {
-                            replaced += std::tolower(static_cast<unsigned char>(gc));
-                        } else {
-                            replaced += gc;
-                        }
-                    }
-                }
-                i++;
-                continue;
-            }
-
-            char c = fmt[i];
+        auto emit = [&](char c) {
             if (cap_next) {
-                replaced += std::toupper(static_cast<unsigned char>(c));
+                result += ascii::to_upper(c);
                 cap_next = false;
             } else if (in_upper) {
-                replaced += std::toupper(static_cast<unsigned char>(c));
+                result += ascii::to_upper(c);
             } else if (in_lower) {
-                replaced += std::tolower(static_cast<unsigned char>(c));
+                result += ascii::to_lower(c);
             } else {
-                replaced += c;
+                result += c;
             }
+        };
+        auto emit_group = [&](char digit) {
+            const auto grp = static_cast<std::size_t>(digit - '0');
+            if (grp < match.size())
+                for (const char gc : match[static_cast<int>(grp)].str()) emit(gc);
+        };
+
+        for (std::size_t i = 0; i < fmt.size(); ++i) {
+            const bool has_next = i + 1 < fmt.size();
+            if (fmt[i] == '\\' && has_next) {
+                const char next = fmt[i + 1];
+                if (next == 'U') { in_upper = true; in_lower = false; ++i; continue; }
+                if (next == 'L') { in_lower = true; in_upper = false; ++i; continue; }
+                if (next == 'E') { in_upper = false; in_lower = false; ++i; continue; }
+                if (next == 'C') { cap_next = true; ++i; continue; }
+                if (ascii::is_digit(next)) { emit_group(next); ++i; continue; }
+            } else if (fmt[i] == '$' && has_next && ascii::is_digit(fmt[i + 1])) {
+                emit_group(fmt[i + 1]);
+                ++i;
+                continue;
+            }
+            emit(fmt[i]);
         }
-        result += replaced;
-        last_pos = match.position() + match.length();
+        last_pos = static_cast<std::size_t>(match.position() + match.length());
     }
     result.append(filename, last_pos, std::string::npos);
     return result;

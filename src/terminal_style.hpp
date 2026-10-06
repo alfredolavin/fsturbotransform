@@ -1,240 +1,277 @@
 #ifndef TERMINAL_STYLE_HPP
 #define TERMINAL_STYLE_HPP
 
-#include <iostream>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cmath>
-#include <cstdint>
 #include <unistd.h>
-#include <sstream>
-#include <print>
-#include <format>
-#include <regex>
+#include "color.hpp"
 #include "sixel_renderer.hpp"
+#include "terminal_probe.hpp"
+#include "ttf_font.hpp"
 
 namespace fsturbo::term {
 
+using RGB = Rgb;
+
 enum class ColorMode {
-    Full,     // Sixel graphics + TrueColor RGB + In-place Live Dashboard
-    Terminal, // TrueColor RGB ANSI + In-place Live Dashboard
-    Simple,   // 16-color ANSI + In-place Live Dashboard
+    Full,     // Sixel graphics (banner, icons, live dashboard) + TrueColor text
+    Terminal, // TrueColor 24-bit RGB ANSI + in-place live dashboard
+    Simple,   // 16-color ANSI + in-place live dashboard
     None      // Plain text, non-interactive
 };
 
-inline ColorMode g_color_mode = ColorMode::Full;
+inline ColorMode g_color_mode = ColorMode::None;
+inline TermInfo g_term;
 
 inline bool is_tty() {
-    static const bool tty = (isatty(STDOUT_FILENO) != 0);
+    static const bool tty = isatty(STDOUT_FILENO) != 0;
     return tty;
 }
 
-inline void set_color_mode_from_string(std::string_view mode_str) {
-    if (mode_str == "full") g_color_mode = ColorMode::Full;
-    else if (mode_str == "terminal") g_color_mode = ColorMode::Terminal;
-    else if (mode_str == "simple") g_color_mode = ColorMode::Simple;
-    else if (mode_str == "none") g_color_mode = ColorMode::None;
-    else g_color_mode = is_tty() ? ColorMode::Full : ColorMode::None;
+// Returns false for "auto" (or anything unrecognized): the mode is then detected from the terminal.
+constexpr bool parse_color_mode(std::string_view s, ColorMode& out) {
+    if (s == "full") out = ColorMode::Full;
+    else if (s == "terminal") out = ColorMode::Terminal;
+    else if (s == "simple") out = ColorMode::Simple;
+    else if (s == "none") out = ColorMode::None;
+    else return false;
+    return true;
 }
 
-struct RGB {
-    uint8_t r = 0;
-    uint8_t g = 0;
-    uint8_t b = 0;
-};
-
-inline std::string rgb_fg(RGB c) {
-    if (g_color_mode == ColorMode::None) return "";
-    if (g_color_mode == ColorMode::Simple) return "\033[36m";
-    return std::format("\033[38;2;{};{};{}m", c.r, c.g, c.b);
+constexpr bool is_color_mode_name(std::string_view s) {
+    ColorMode m{};
+    return parse_color_mode(s, m) || s == "auto";
 }
 
-inline std::string rgb_bg(RGB c) {
-    if (g_color_mode == ColorMode::None) return "";
-    if (g_color_mode == ColorMode::Simple) return "\033[44m";
-    return std::format("\033[48;2;{};{};{}m", c.r, c.g, c.b);
+// Resolves the effective mode. Terminal queries only run when Sixel output is possible.
+inline void init_terminal(std::string_view requested) {
+    if (ColorMode forced{}; parse_color_mode(requested, forced)) {
+        g_color_mode = forced;
+        if (forced != ColorMode::None) g_term = probe_terminal(is_tty() && forced == ColorMode::Full);
+        return;
+    }
+    if (!is_tty()) {
+        g_color_mode = ColorMode::None;
+        return;
+    }
+    g_term = probe_terminal(true);
+    const char* term_env = std::getenv("TERM");
+    const std::string_view term_name = term_env ? term_env : "";
+    if (g_term.sixel) g_color_mode = ColorMode::Full;
+    else if (term_name == "dumb") g_color_mode = ColorMode::None;
+    else if (term_name == "linux") g_color_mode = ColorMode::Simple;
+    else g_color_mode = ColorMode::Terminal;
 }
 
-inline std::string reset() {
-    if (g_color_mode == ColorMode::None) return "";
-    return "\033[0m";
+inline bool interactive() { return g_color_mode != ColorMode::None && is_tty(); }
+
+// --- SGR helpers ----------------------------------------------------------------
+
+inline constexpr std::array<Rgb, 16> kAnsi16{{{0, 0, 0},       {205, 0, 0},     {0, 205, 0},   {205, 205, 0},
+                                              {0, 0, 238},     {205, 0, 205},   {0, 205, 205}, {229, 229, 229},
+                                              {127, 127, 127}, {255, 0, 0},     {0, 255, 0},   {255, 255, 0},
+                                              {92, 92, 255},   {255, 0, 255},   {0, 255, 255}, {255, 255, 255}}};
+
+// Nearest entry of the xterm 16-color palette (red-mean weighted distance).
+constexpr int nearest_ansi16(Rgb c) {
+    int best = 0;
+    long best_d = -1;
+    for (int i = 0; i < 16; ++i) {
+        const Rgb p = kAnsi16[static_cast<std::size_t>(i)];
+        const long rm = (c.r + p.r) / 2;
+        const long dr = c.r - p.r, dg = c.g - p.g, db = c.b - p.b;
+        const long d = ((512 + rm) * dr * dr >> 8) + 4 * dg * dg + ((767 - rm) * db * db >> 8);
+        if (best_d < 0 || d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return best;
 }
 
-inline std::string bold() {
-    if (g_color_mode == ColorMode::None) return "";
-    return "\033[1m";
+static_assert(nearest_ansi16({250, 10, 10}) == 9);
+static_assert(nearest_ansi16({0, 250, 240}) == 14);
+
+inline std::string rgb_fg(Rgb c) {
+    switch (g_color_mode) {
+        case ColorMode::None: return {};
+        case ColorMode::Simple: {
+            const int i = nearest_ansi16(c);
+            return std::format("\x1b[{}m", i < 8 ? 30 + i : 90 + i - 8);
+        }
+        default: return std::format("\x1b[38;2;{};{};{}m", c.r, c.g, c.b);
+    }
 }
 
-inline std::string italic() {
-    if (g_color_mode == ColorMode::None) return "";
-    return "\033[3m";
+inline std::string rgb_bg(Rgb c) {
+    switch (g_color_mode) {
+        case ColorMode::None: return {};
+        case ColorMode::Simple: {
+            const int i = nearest_ansi16(c);
+            return std::format("\x1b[{}m", i < 8 ? 40 + i : 100 + i - 8);
+        }
+        default: return std::format("\x1b[48;2;{};{};{}m", c.r, c.g, c.b);
+    }
 }
 
-inline RGB lerp(RGB a, RGB b, float t) {
-    return RGB{
-        static_cast<uint8_t>(a.r + (b.r - a.r) * t),
-        static_cast<uint8_t>(a.g + (b.g - a.g) * t),
-        static_cast<uint8_t>(a.b + (b.b - a.b) * t)
-    };
-}
+inline std::string_view reset() { return g_color_mode == ColorMode::None ? "" : "\x1b[0m"; }
+inline std::string_view bold() { return g_color_mode == ColorMode::None ? "" : "\x1b[1m"; }
+inline std::string_view dim() { return g_color_mode == ColorMode::None ? "" : "\x1b[2m"; }
+inline std::string_view italic() { return g_color_mode == ColorMode::None ? "" : "\x1b[3m"; }
 
-inline std::string gradient_text(std::string_view text, RGB start, RGB end) {
+// Per-code-point color gradient (multi-byte UTF-8 sequences are never split).
+inline std::string gradient_text(std::string_view text, Rgb start, Rgb end) {
     if (g_color_mode == ColorMode::None) return std::string(text);
-    if (g_color_mode == ColorMode::Simple) return std::format("\033[33m{}\033[0m", text);
+    const std::size_t n = ttf::utf8_length(text);
     std::string out;
-    size_t len = text.length();
-    if (len == 0) [[unlikely]] return out;
-    for (size_t i = 0; i < len; ++i) {
-        float t = (len > 1) ? static_cast<float>(i) / (len - 1) : 0.0f;
-        RGB color = lerp(start, end, t);
-        out += rgb_fg(color) + text[i];
+    out.reserve(text.size() * 20);
+    std::size_t i = 0;
+    for (std::size_t pos = 0; pos < text.size();) {
+        std::size_t len = 1;
+        while (pos + len < text.size() && (static_cast<unsigned char>(text[pos + len]) & 0xC0) == 0x80) ++len;
+        const float t = n > 1 ? static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
+        out += rgb_fg(lerp(start, end, t));
+        out += text.substr(pos, len);
+        pos += len;
+        ++i;
     }
     out += reset();
     return out;
 }
 
-// Icons (Sixel full-color graphics in Full mode, ANSI in Terminal/Simple)
-inline std::string icon_dir() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Folder) + " ";
-    return (g_color_mode != ColorMode::None) ? "📁 " : "[DIR] ";
+// --- Inline Sixel image placement ---------------------------------------------------
+
+// Columns covered by a Sixel icon in the current terminal.
+inline int icon_columns() {
+    const int cw = g_term.cell_width();
+    return std::max(1, (sixel::kIconSize + cw - 1) / cw);
 }
 
-inline std::string icon_file() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::File) + " ";
-    return (g_color_mode != ColorMode::None) ? "📄 " : "[FILE] ";
+// Emits a complete Sixel image as its own block of rows. Space for rows+1 lines is
+// reserved first, so neither the image nor the terminal's post-image cursor
+// placement can scroll the screen; the cursor ends on the line below the image.
+inline std::string place_image(std::string_view sixel_data, int pixel_height) {
+    const int rows = std::max(1, (pixel_height + g_term.cell_height() - 1) / g_term.cell_height());
+    std::string out = "\r";
+    out.append(static_cast<std::size_t>(rows + 1), '\n');
+    out += std::format("\x1b[{}A\x1b" "7", rows + 1);
+    out += sixel_data;
+    out += std::format("\x1b" "8\x1b[{}B\r", rows);
+    return out;
 }
 
-inline std::string icon_flatten() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Flatten) + " ";
-    return (g_color_mode != ColorMode::None) ? "⚡ " : "[FLATTEN] ";
-}
-
-inline std::string icon_rename() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Rename) + " ";
-    return (g_color_mode != ColorMode::None) ? "✏️  " : "[RENAME] ";
-}
-
-inline std::string icon_exclude() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Exclude) + " ";
-    return (g_color_mode != ColorMode::None) ? "✖️  " : "[EXCLUDE] ";
-}
-
-inline std::string icon_error() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Error) + " ";
-    return (g_color_mode != ColorMode::None) ? "💥 " : "[ERROR] ";
-}
-
-inline std::string icon_success() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Success) + " ";
-    return (g_color_mode != ColorMode::None) ? "✅ " : "[OK] ";
-}
-
-inline std::string icon_font() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Font) + " ";
-    return (g_color_mode != ColorMode::None) ? "🔤 " : "[FONT] ";
-}
-
-inline std::string icon_rocket() {
-    if (g_color_mode == ColorMode::Full) return sixel::generate_sixel_icon(sixel::SixelIconType::Rocket) + " ";
-    return (g_color_mode != ColorMode::None) ? "🚀 " : "[EXEC] ";
-}
-
-// Syntax Highlighting helper for Mini-Terminal text
-inline std::string highlight_syntax(std::string_view text) {
-    if (g_color_mode == ColorMode::None) return std::string(text);
-
-    std::string str(text);
-    static const std::regex ext_rx(R"(\.([a-zA-Z0-9]+))");
-    str = std::regex_replace(str, ext_rx, "\033[36m.$1\033[0m");
-
-    static const std::regex num_rx(R"(\b(\d+)\b)");
-    str = std::regex_replace(str, num_rx, "\033[35m$1\033[0m");
-
-    static const std::regex arrow_rx(R"(➔|->)");
-    str = std::regex_replace(str, arrow_rx, "\033[1;33m➔\033[0m");
-
-    return str;
-}
-
-// Reusable Live Dashboard: Progress bar + Mini-Terminal Console
-class LiveDashboard {
-    bool is_interactive = false;
-    size_t last_current = 0;
-    size_t total_items = 0;
-    const int frame_height = 4; // 1 progress bar + 3 lines of mini-terminal box
-
-public:
-    LiveDashboard() = default;
-
-    void init(size_t total) {
-        total_items = total;
-        is_interactive = (g_color_mode != ColorMode::None) && is_tty();
-        last_current = 0;
-    }
-
-    void update(size_t current, std::string_view action, std::string_view source, std::string_view dest, std::string_view extra = "") {
-        if (!is_interactive) return;
-
-        // If previously drawn, move cursor up to overwrite in-place!
-        if (last_current > 0) {
-            std::print("\033[{}A\r", frame_height);
-        }
-
-        // 1. Line: Real-time Multi-Color Gradient Progress Bar
-        constexpr int bar_width = 30;
-        float ratio = (total_items > 0) ? static_cast<float>(current) / total_items : 1.0f;
-        int filled = static_cast<int>(ratio * bar_width);
-
-        RGB c_start = {0, 255, 240};
-        RGB c_mid   = {255, 0, 200};
-        RGB c_end   = {255, 215, 0};
-
-        std::string bar_str = "[";
-        for (int i = 0; i < bar_width; ++i) {
-            if (i < filled) {
-                float t = static_cast<float>(i) / bar_width;
-                RGB c = (t < 0.5f) ? lerp(c_start, c_mid, t * 2.0f) : lerp(c_mid, c_end, (t - 0.5f) * 2.0f);
-                bar_str += rgb_fg(c) + "█";
-            } else {
-                bar_str += rgb_fg({60, 60, 80}) + "░";
-            }
-        }
-        bar_str += reset() + "] ";
-
-        std::string pct_str = std::format("{:5.1f}% ({}/{})", ratio * 100.0f, current, total_items);
-        std::println("\033[2K{}{}{}{} {}", bold(), bar_str, rgb_fg({200, 220, 255}), pct_str, rgb_fg({150, 150, 180}) + std::string(extra));
-
-        // 2-4. Lines: Reused framed Mini-Terminal with Fira Code monospace aesthetic
-        RGB border_col = {100, 100, 160};
-        RGB title_col  = {0, 255, 200};
-        RGB action_col = {255, 215, 0};
-
-        std::string border = rgb_fg(border_col);
-        std::string title  = bold() + rgb_fg(title_col) + "MINI-TERMINAL [Fira Code Engine]" + reset() + border;
-
-        std::string content = std::format("{} ➔ {}", source, dest);
-        if (dest.empty()) content = std::string(source);
-
-        std::println("\033[2K{}┌─ {} ──────────────────────────────────────────────────┐{}", border, title, reset());
-        std::println("\033[2K{}│{} {}{} {} {:<48} {}│{}",
-                     border, reset(),
-                     bold() + rgb_fg(action_col), action, reset(),
-                     highlight_syntax(content),
-                     border, reset());
-        std::println("\033[2K{}└─────────────────────────────────────────────────────────────────────────────┘{}", border, reset());
-
-        std::fflush(stdout);
-        last_current = current;
-    }
-
-    void finish() {
-        if (is_interactive && last_current > 0) {
-            std::println(); // Leave clean spacing below the completed dashboard
+// One output line led by an icon: Sixel icon (Full), emoji (Terminal/Simple), or a text tag (None).
+// In Full mode the text is printed first and the icon is painted back onto that line,
+// which keeps the cursor math independent of each terminal's Sixel cursor policy.
+inline std::string icon_line(sixel::Icon icon, std::string_view text) {
+    static constexpr std::array<std::string_view, std::to_underlying(sixel::Icon::Count)> emoji{
+        "📁", "📄", "✏️ ", "⚡", "✖️ ", "💥", "✅", "🚀", "🔤"};
+    static constexpr std::array<std::string_view, std::to_underlying(sixel::Icon::Count)> tags{
+        "[DIR]", "[FILE]", "[RENAME]", "[FLATTEN]", "[EXCLUDE]", "[ERROR]", "[OK]", "[EXEC]", "[FONT]"};
+    const auto i = std::to_underlying(icon);
+    switch (g_color_mode) {
+        case ColorMode::None: return std::format(" {} {}\n", tags[i], text);
+        case ColorMode::Terminal:
+        case ColorMode::Simple: return std::format(" {} {}\n", emoji[i], text);
+        case ColorMode::Full: {
+            std::string out(static_cast<std::size_t>(icon_columns() + 2), ' ');
+            out += text;
+            out += "\n\x1b" "7\x1b[1A\x1b[2G";
+            out += sixel::icon(icon);
+            out += "\x1b" "8";
+            return out;
         }
     }
+    return std::string(text);
+}
+
+// --- Mini-console syntax highlighting ------------------------------------------------
+
+enum class Role : std::uint8_t { Plain, Prompt, Action, Dir, Name, Ext, Number, Arrow, Dest, Note };
+
+struct Span {
+    std::string_view text;
+    Role role = Role::Plain;
 };
+
+constexpr Rgb role_color(Role r) {
+    switch (r) {
+        case Role::Prompt: return palette::neon_cyan;
+        case Role::Action: return palette::action;
+        case Role::Dir: return palette::path_dir;
+        case Role::Name: return palette::path_name;
+        case Role::Ext: return palette::path_ext;
+        case Role::Number: return palette::number;
+        case Role::Arrow: return palette::arrow;
+        case Role::Dest: return palette::dest;
+        case Role::Note: return palette::note;
+        case Role::Plain: break;
+    }
+    return palette::path_name;
+}
+
+// Splits a path into directory / name (digit runs as numbers) / extension tokens.
+constexpr void highlight_path(std::string_view path, Role name_role, std::vector<Span>& out) {
+    const std::size_t slash = path.rfind('/');
+    std::string_view name = path;
+    if (slash != std::string_view::npos) {
+        out.push_back({path.substr(0, slash + 1), Role::Dir});
+        name = path.substr(slash + 1);
+    }
+    std::string_view ext;
+    if (const std::size_t dot = name.rfind('.'); dot != std::string_view::npos && dot > 0) {
+        ext = name.substr(dot);
+        name = name.substr(0, dot);
+    }
+    auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+    for (std::size_t i = 0; i < name.size();) {
+        const bool digits = is_digit(name[i]);
+        std::size_t j = i + 1;
+        while (j < name.size() && is_digit(name[j]) == digits) ++j;
+        out.push_back({name.substr(i, j - i), digits ? Role::Number : name_role});
+        i = j;
+    }
+    if (!ext.empty()) out.push_back({ext, Role::Ext});
+}
+
+static_assert([] {
+    std::vector<Span> s;
+    highlight_path("src/Report_2024.TXT", Role::Name, s);
+    return s.size() == 4 && s[0].text == "src/" && s[1].text == "Report_" && s[2].role == Role::Number && s[3].text == ".TXT";
+}());
+
+// Code-point aware truncation that keeps the end of a path visible ("…/deep/name.txt").
+inline std::string fit_left(std::string_view s, std::size_t max_cols) {
+    const std::size_t n = ttf::utf8_length(s);
+    if (n <= max_cols) return std::string(s);
+    if (max_cols == 0) return {};
+    std::size_t skip = n - (max_cols - 1), pos = 0;
+    while (skip > 0 && pos < s.size()) {
+        ++pos;
+        while (pos < s.size() && (static_cast<unsigned char>(s[pos]) & 0xC0) == 0x80) ++pos;
+        --skip;
+    }
+    return "…" + std::string(s.substr(pos));
+}
+
+inline std::string fit_right(std::string_view s, std::size_t max_cols) {
+    const std::size_t n = ttf::utf8_length(s);
+    if (n <= max_cols) return std::string(s);
+    if (max_cols == 0) return {};
+    std::size_t keep = max_cols - 1, pos = 0;
+    while (keep > 0 && pos < s.size()) {
+        ++pos;
+        while (pos < s.size() && (static_cast<unsigned char>(s[pos]) & 0xC0) == 0x80) ++pos;
+        --keep;
+    }
+    return std::string(s.substr(0, pos)) + "…";
+}
 
 } // namespace fsturbo::term
 
-#endif
+#endif // TERMINAL_STYLE_HPP
