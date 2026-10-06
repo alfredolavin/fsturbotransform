@@ -173,5 +173,79 @@ for registers, expected in ((1024, 1024), (256, 256), (None, 256), (64, 64), (40
         frames = [i for i in scr.images[1:] if i["rows"] > 5]
         check("sixel colours: every image fits the registers", all(i["colors"] <= 1024 for i in scr.images), str([i["colors"] for i in scr.images]))
 
+# --- Kitty graphics ----------------------------------------------------------------------------
+
+
+def run_kitty(rows, cols, *flags, collision=False, **terminal):
+    with tempfile.TemporaryDirectory() as root:
+        make_tree(root, collision)
+        return vt.run([BIN, "--color=full", "--graphics=kitty", "--dry-run", "--no-gitignore", *flags, root], rows, cols, kitty=True, **terminal)
+
+
+scr, code = run_kitty(50, 100, keep_pixels=True)
+images = scr.images
+check("kitty: exit status and images", code == 0 and len(images) >= 3 and all(i.get("kitty") for i in images), f"exit {code}, {[(i.get('id'), i.get('rows')) for i in images]}")
+if len(images) >= 3 and all(i.get("kitty") for i in images):
+    check("kitty: every image is RGBA and its decompressed size matches", all(i["format"] == 32 and i["bytes"] == i["expected"] for i in images), str([(i["bytes"], i["expected"]) for i in images]))
+    check("kitty: quiet (q=2) and never moves the cursor (C=1)", all(i["quiet"] == "2" and not i["cursor_moves"] for i in images), str([(i["quiet"], i["cursor_moves"]) for i in images]))
+    banner, report = images[0], images[-1]
+    frames = [i for i in images if i["id"] == 2]
+    check("kitty: stable ids (banner 1, frame 2, report 3), one placement each", banner["id"] == 1 and report["id"] == 3 and len(frames) >= 2 and all(i["placement"] == 1 for i in images), str([(i["id"], i["placement"]) for i in images]))
+    check("kitty: every frame redraws the same cells", all(f["top"] == frames[0]["top"] and f["rows"] == frames[0]["rows"] and f["cols"] == frames[0]["cols"] for f in frames), str(frames[0]))
+    frame = frames[-1]
+    check("kitty: no spare row: the frame fills the screen above the report", frame["top"] <= 1 and report["top"] == frame["top"] + frame["rows"] and report["top"] + report["rows"] <= scr.rows - 1,
+          f"frame {frame['top']}+{frame['rows']}, report {report['top']}+{report['rows']}, screen {scr.rows}")
+    check("kitty: report is at most 20% of the console and in columns", 5 * report["rows"] <= frame["rows"] - 1 and report["rows"] <= 6, f"frame {frame['rows']} rows, report {report['rows']}")
+    # Real alpha: the frame is transparent outside its windows and anti-aliased at their edges.
+    alphas = set(frame["pixels"][3::4])
+    check("kitty: real transparency (alpha 0, 255 and in between)", 0 in alphas and 255 in alphas and any(0 < a < 255 for a in alphas), f"{len(alphas)} distinct alpha values")
+    check("kitty: the frame is as big as its cells", frame["width"] == min(scr.cols - 1, 100) * scr.cell_w and frame["height"] == frame["rows"] * scr.cell_h, str((frame["width"], frame["height"])))
+
+scr, _ = run_kitty(50, 100, "--no-report")
+frames = [i for i in scr.images if i["id"] == 2]
+check("kitty --no-report: the frame fills the screen but one row", frames and frames[-1]["top"] == 0 and frames[-1]["rows"] == 50 - 1 and not any(i["id"] == 3 for i in scr.images), str([(i["id"], i["top"], i["rows"]) for i in scr.images]))
+
+scr, code = run_kitty(50, 100, collision=True)
+check("kitty: the frame is deleted before log lines are flushed", scr.kitty_deletes >= 1 and code == 1, f"{scr.kitty_deletes} deletes, exit {code}")
+
+# Choosing the protocol: asked explicitly, or by what the terminal says (Kitty first), or $FSTURBO_GRAPHICS.
+def protocol_of(scr):
+    return None if not scr.images else "kitty" if scr.images[0].get("kitty") else "sixel"
+
+
+with tempfile.TemporaryDirectory() as root:
+    make_tree(root)
+    base = [BIN, "--dry-run", "--no-gitignore", root]
+    for label, argv, terminal, env, expected in (
+        ("auto: terminal answers Kitty and Sixel -> Kitty", ["--color=auto"], dict(kitty=True, sixel=True), None, "kitty"),
+        ("auto: only Sixel -> Sixel", ["--color=auto"], dict(kitty=False, sixel=True), None, "sixel"),
+        ("auto: neither -> text", ["--color=auto"], dict(kitty=False, sixel=False), None, None),
+        ("--graphics=sixel overrides a Kitty terminal", ["--color=auto", "--graphics=sixel"], dict(kitty=True, sixel=True), None, "sixel"),
+        ("--graphics=kitty works in a terminal that answers nothing", ["--color=auto", "--graphics=kitty"], dict(kitty=False, sixel=False, registers=None), None, "kitty"),
+        ("$FSTURBO_GRAPHICS=kitty", ["--color=auto"], dict(kitty=False, sixel=False), {"FSTURBO_GRAPHICS": "kitty"}, "kitty"),
+        ("--graphics beats $FSTURBO_GRAPHICS", ["--color=auto", "--graphics=sixel"], dict(kitty=False, sixel=False), {"FSTURBO_GRAPHICS": "kitty"}, "sixel"),
+        ("--color=full with a Kitty terminal", ["--color=full"], dict(kitty=True, sixel=False), None, "kitty"),
+        ("--color=terminal never draws images", ["--color=terminal", "--graphics=kitty"], dict(kitty=True), None, None),
+    ):
+        scr, code = vt.run([base[0], *argv, *base[1:]], 50, 100, env=env, **terminal)
+        check(f"protocol: {label}", protocol_of(scr) == expected and code == 0, f"got {protocol_of(scr)}, exit {code}")
+
+# Detection (--color=auto): what the terminal answers decides whether graphics are used. This is the
+# case a Konsole user hits: its answer carries the colour-register reply before DA1, and the DA1 reader
+# once tripped over it, so auto mode silently fell back to text.
+def run_auto(rows, cols, **terminal):
+    with tempfile.TemporaryDirectory() as root:
+        make_tree(root)
+        return vt.run([BIN, "--color=auto", "--dry-run", "--no-gitignore", root], rows, cols, **terminal)
+
+
+for label, terminal, graphics in (
+    ("Sixel, registers answered (Konsole)", dict(registers=256), True),
+    ("Sixel, registers not answered", dict(registers=None), True),
+    ("no Sixel in the DA1 answer", dict(sixel=False), False),
+):
+    scr, code = run_auto(50, 100, **terminal)
+    check(f"auto detection: {label}", code == 0 and bool(scr.images) == graphics, f"exit {code}, images {len(scr.images)}\n{scr.dump() if not graphics else ''}")
+
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

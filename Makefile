@@ -3,11 +3,12 @@
 ifeq ($(origin CXX),default)
 CXX := $(firstword $(foreach c,g++-16 g++-15 clang++-21 clang++-20 clang++-19 g++ clang++,$(if $(shell command -v $(c) 2>/dev/null),$(c))))
 endif
-# PCRE2 (libpcre2-dev) is the regex engine, used as a system library.
+# PCRE2 (libpcre2-dev) is the regex engine and zlib (zlib1g-dev) compresses Kitty images; both are system libraries.
 PCRE2_CFLAGS := $(shell pkg-config --cflags libpcre2-8 2>/dev/null)
 PCRE2_LIBS := $(shell pkg-config --libs libpcre2-8 2>/dev/null || echo -lpcre2-8)
 CXXFLAGS = -std=c++26 -O3 -march=native -flto -ffast-math -pthread -Wall -Wextra -Isrc $(PCRE2_CFLAGS) -DFSTURBO_LIBDIR='"$(LIBDIR)"'
-LDFLAGS = -static-libstdc++ -static-libgcc -pthread -flto -ldl $(PCRE2_LIBS)
+ZLIB_LIBS := $(shell pkg-config --libs zlib 2>/dev/null || echo -lz)
+LDFLAGS = -static-libstdc++ -static-libgcc -pthread -flto -ldl $(PCRE2_LIBS) $(ZLIB_LIBS)
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin

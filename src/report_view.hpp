@@ -226,9 +226,9 @@ inline sixel::Canvas draw_report_window(std::span<const ReportRow> rows, const R
     return c;
 }
 
-inline std::string render_report_sixel(std::span<const ReportRow> rows, const ReportStatus& status, const ReportLayout& layout, const ReportMetrics& m) {
+inline std::string render_report_image(std::span<const ReportRow> rows, const ReportStatus& status, const ReportLayout& layout, const ReportMetrics& m) {
     const sixel::Canvas c = draw_report_window(rows, status, layout, m);
-    return term::place_image(sixel::encode(c), c.height());
+    return term::place_image(gfx::image(c, gfx::kReportId, window_columns(), layout.rows + 2), c.height());
 }
 
 inline void print_report(std::span<const ReportRow> rows, const ReportStatus& status) {
@@ -241,7 +241,7 @@ inline void print_report(std::span<const ReportRow> rows, const ReportStatus& st
     }
     const ReportMetrics m = report_metrics();
     const ReportLayout layout = layout_report(rows, m.inner, m.icon_cols);
-    std::print("{}", g_color_mode == ColorMode::Full ? render_report_sixel(rows, status, layout, m) : render_report_ansi(rows, status, layout, m));
+    std::print("{}", g_color_mode == ColorMode::Full ? render_report_image(rows, status, layout, m) : render_report_ansi(rows, status, layout, m));
 }
 
 // --- Sharing the screen --------------------------------------------------------------------
@@ -283,7 +283,7 @@ inline ScreenPlan plan_screen(bool want_report) {
         plan.report_rows = report_rows;
         return plan;
     }
-    const int spare = g_color_mode == ColorMode::Full ? 1 : 0;
+    const int spare = g_color_mode == ColorMode::Full && gfx::g_protocol == gfx::Protocol::Sixel ? 1 : 0;
     const int rows = g_term.rows;
     if (report_rows > 0) {
         const int lines = rows - report_rows - 4 - spare;

@@ -48,6 +48,7 @@ set(HEADERS
     src/console_window.hpp
     src/dashboard.hpp
     src/execution_stats.hpp
+    src/graphics.hpp
     src/fira_code_font.hpp
     src/js_bridge_api.h
     src/js_engine.hpp
@@ -97,7 +98,8 @@ target_link_options(fsturbotransform PRIVATE
 # JavaScript bridge below is loaded on first use.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-8)
-target_link_libraries(fsturbotransform PRIVATE PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
+find_package(ZLIB REQUIRED) # compresses Kitty images
+target_link_libraries(fsturbotransform PRIVATE PkgConfig::PCRE2 ZLIB::ZLIB ${CMAKE_DL_LIBS})
 # Where the bridge gets installed: also searched at run time (bin/ may be a symlink).
 target_compile_definitions(fsturbotransform PRIVATE FSTURBO_LIBDIR="${CMAKE_INSTALL_PREFIX}/lib/fsturbotransform")
 

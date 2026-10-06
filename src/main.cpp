@@ -6,6 +6,7 @@
 #include "banner.hpp"
 #include "cli_parser.hpp"
 #include "fira_code_font.hpp"
+#include "graphics.hpp"
 #include "renamer.hpp"
 #include "report_view.hpp"
 #include "sixel_renderer.hpp"
@@ -21,10 +22,13 @@ inline void render_header() {
     // Full mode: a true-color Sixel banner with the app icon and the title set in the embedded Fira Code font.
     if (g_color_mode == ColorMode::Full) {
         const int cell_w = g_term.cell_width(), cell_h = g_term.cell_height();
-        const int width = std::min(g_term.cols - 1, 72) * cell_w;
+        const int cols = std::min(g_term.cols - 1, 72);
+        const int width = cols * cell_w;
         const int height = sixel::kBannerRows * cell_h;
-        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0", g_term.background);
-        std::print("{}", place_image(sixel::encode(banner), height));
+        // Sixel has no alpha: blend the icon's glow into the terminal's background. Kitty keeps it translucent.
+        const auto background = gfx::g_protocol == gfx::Protocol::Sixel ? g_term.background : std::nullopt;
+        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0", background);
+        std::print("{}", place_image(gfx::image(banner, gfx::kBannerId, cols, sixel::kBannerRows), height));
         std::println();
         return;
     }

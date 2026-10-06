@@ -5,11 +5,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <unistd.h>
 #include "color.hpp"
+#include "graphics.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_probe.hpp"
 #include "ttf_font.hpp"
@@ -48,12 +50,46 @@ constexpr bool is_color_mode_name(std::string_view s) {
     return parse_color_mode(s, m) || s == "auto";
 }
 
-// Resolves the effective mode. Terminal queries only run when Sixel output is possible.
-inline void init_terminal(std::string_view requested) {
+// The image protocol the user asked for (--graphics / $FSTURBO_GRAPHICS); anything else is "auto".
+enum class GraphicsRequest { Auto, Kitty, Sixel };
+
+constexpr GraphicsRequest parse_graphics(std::string_view s) {
+    return s == "kitty" ? GraphicsRequest::Kitty : s == "sixel" ? GraphicsRequest::Sixel : GraphicsRequest::Auto;
+}
+
+constexpr bool is_graphics_name(std::string_view s) { return s == "auto" || s == "kitty" || s == "sixel"; }
+
+// Picks the protocol once the terminal has been probed: an explicit request wins (some terminals
+// answer no queries at all), then what the terminal says it can do, Kitty before Sixel (24-bit
+// RGBA with real transparency beats a palette). nullopt: no graphics.
+inline std::optional<gfx::Protocol> choose_graphics(GraphicsRequest request) {
+    const char* term_env = std::getenv("TERM");
+    const bool kitty_hint = std::getenv("KITTY_WINDOW_ID") != nullptr || (term_env != nullptr && std::string_view(term_env).contains("kitty"));
+    if (request == GraphicsRequest::Kitty) return gfx::Protocol::Kitty;
+    if (request == GraphicsRequest::Sixel) return gfx::Protocol::Sixel;
+    if (g_term.kitty || kitty_hint) return gfx::Protocol::Kitty;
+    if (g_term.sixel) return gfx::Protocol::Sixel;
+    return std::nullopt;
+}
+
+inline void apply_graphics(gfx::Protocol protocol) {
+    gfx::g_protocol = protocol;
+    sixel::set_palette_size(g_term.color_registers);
+    // Kitty scales images to the cell grid, so an unknown cell size only costs sharpness: guess a
+    // roomy one rather than the tiny default.
+    if (protocol == gfx::Protocol::Kitty && (g_term.cell_w <= 0 || g_term.cell_h <= 0)) {
+        g_term.cell_w = 10;
+        g_term.cell_h = 20;
+    }
+}
+
+// Resolves the effective mode. Terminal queries only run when graphics output is possible.
+inline void init_terminal(std::string_view requested, std::string_view graphics = "auto") {
+    const GraphicsRequest request = parse_graphics(graphics);
     if (ColorMode forced{}; parse_color_mode(requested, forced)) {
         g_color_mode = forced;
         if (forced != ColorMode::None) g_term = probe_terminal(is_tty() && forced == ColorMode::Full);
-        sixel::set_palette_size(g_term.color_registers);
+        apply_graphics(choose_graphics(request).value_or(gfx::Protocol::Sixel));
         return;
     }
     if (!is_tty()) {
@@ -61,10 +97,12 @@ inline void init_terminal(std::string_view requested) {
         return;
     }
     g_term = probe_terminal(true);
-    sixel::set_palette_size(g_term.color_registers);
     const char* term_env = std::getenv("TERM");
     const std::string_view term_name = term_env ? term_env : "";
-    if (g_term.sixel) g_color_mode = ColorMode::Full;
+    if (const auto protocol = choose_graphics(request)) {
+        apply_graphics(*protocol);
+        g_color_mode = ColorMode::Full;
+    }
     else if (term_name == "dumb") g_color_mode = ColorMode::None;
     else if (term_name == "linux") g_color_mode = ColorMode::Simple;
     else g_color_mode = ColorMode::Terminal;
@@ -184,7 +222,8 @@ inline std::string icon_line(sixel::Icon icon, std::string_view text) {
             std::string out(static_cast<std::size_t>(icon_columns() + 2), ' ');
             out += text;
             out += "\n\x1b" "7\x1b[1A\x1b[2G";
-            out += sixel::icon(icon);
+            if (gfx::g_protocol == gfx::Protocol::Kitty) out += gfx::kitty_image(sixel::draw_icon(icon), 0, 0, 1); // one row tall, square
+            else out += sixel::icon(icon);
             out += "\x1b" "8";
             return out;
         }

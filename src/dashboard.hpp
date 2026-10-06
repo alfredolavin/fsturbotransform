@@ -288,7 +288,8 @@ class LiveDashboard {
         g.adv = f.adv;
         g.w = width_cols_ * cw;
         g.h = frame_rows_ * ch;
-        reserved_rows_ = frame_rows_ + 1; // spare row absorbs any post-image cursor advance
+        // Sixel: a spare row absorbs any post-image cursor advance. Kitty images never move the cursor.
+        reserved_rows_ = frame_rows_ + (gfx::g_protocol == gfx::Protocol::Sixel ? 1 : 0);
 
         auto baseline_in = [&](float top, float height) { return f.baseline_in(top, height); };
         const float W = static_cast<float>(g.w), CH = static_cast<float>(ch);
@@ -366,7 +367,7 @@ class LiveDashboard {
             const int cx = g.text_x + static_cast<int>(laid_.back().cols) * g.adv;
             frame_.draw_text(fonts_->regular, cx, g.line_baseline.back(), "▌", palette::neon_cyan, g.adv);
         }
-        return sixel::encode(frame_);
+        return gfx::image(frame_, gfx::kFrameId, width_cols_, frame_rows_);
     }
 
     // ---- frame output -----------------------------------------------------------------------
@@ -388,6 +389,8 @@ class LiveDashboard {
             reserve(out);
         }
         if (!pending_logs_.empty()) {
+            // Erasing text does not remove a Kitty image: take the frame off before the log lines go in.
+            if (sixel_ && gfx::g_protocol == gfx::Protocol::Kitty) out += gfx::kitty_delete(gfx::kFrameId);
             out += "\x1b" "8\x1b[J";
             for (auto& [line, stream] : pending_logs_) {
                 if (stream == Stream::Out) {

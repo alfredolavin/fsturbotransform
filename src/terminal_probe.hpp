@@ -27,6 +27,7 @@ struct TermInfo {
     int cell_w = 0; // pixels; 0 = unknown
     int cell_h = 0;
     bool sixel = false;
+    bool kitty = false; // answered the Kitty graphics query
     int color_registers = 256; // Sixel colour registers; 256 when the terminal does not say
     std::optional<Rgb> background;
 
@@ -55,13 +56,14 @@ constexpr std::vector<int> parse_params(std::string_view s) {
     return out;
 }
 
-// DA1 reply: ESC [ ? Ps ; ... c  — returns its parameter string once complete.
+// DA1 reply: ESC [ ? Ps ; ... c  — returns its parameter string once complete. Other private
+// replies (the colour-register one, ESC [ ? 1 ; 0 ; n S) may come before it: skip them.
 constexpr std::optional<std::string_view> find_da1(std::string_view r) {
-    const std::size_t at = r.find("\x1b[?");
-    if (at == std::string_view::npos) return std::nullopt;
-    const std::size_t end = r.find_first_not_of("0123456789;", at + 3);
-    if (end == std::string_view::npos || r[end] != 'c') return std::nullopt;
-    return r.substr(at + 3, end - at - 3);
+    for (std::size_t at = r.find("\x1b[?"); at != std::string_view::npos; at = r.find("\x1b[?", at + 3)) {
+        const std::size_t end = r.find_first_not_of("0123456789;", at + 3);
+        if (end != std::string_view::npos && r[end] == 'c') return r.substr(at + 3, end - at - 3);
+    }
+    return std::nullopt;
 }
 
 // OSC 11 reply: ESC ] 11 ; rgb:RRRR/GGGG/BBBB (BEL | ST), 1-4 hex digits per channel.
@@ -102,6 +104,9 @@ constexpr std::optional<std::pair<int, int>> find_cell_size(std::string_view r) 
     return std::pair{p[2], p[1]};
 }
 
+// Kitty graphics reply to our query (image id 31): an APC string G i=31 ; OK, ended by ST.
+constexpr bool find_kitty_graphics(std::string_view r) { return r.find("\x1b_Gi=31;OK") != std::string_view::npos; }
+
 // XTSMGRAPHICS reply for the Sixel colour registers: ESC [ ? 1 ; 0 ; count S
 constexpr std::optional<int> find_color_registers(std::string_view r) {
     const std::size_t at = r.find("\x1b[?1;0;");
@@ -114,9 +119,12 @@ constexpr std::optional<int> find_color_registers(std::string_view r) {
 }
 
 static_assert(find_da1("\x1b[?62;4;22c").value() == "62;4;22");
+static_assert(find_kitty_graphics("\x1b_Gi=31;OK\x1b\\\x1b[?62;1;4c") && !find_kitty_graphics("\x1b_Gi=31;ENOTSUPPORTED\x1b\\"));
 static_assert(find_color_registers("\x1b[?1;0;1024S") == 1024 && find_color_registers("junk\x1b[?1;0;256S\x1b[?62;4c") == 256);
 static_assert(!find_color_registers("\x1b[?1;3;0S") && !find_color_registers("\x1b[?1;0;S") && !find_color_registers("\x1b[?2;0;5S"));
 static_assert(!find_da1("\x1b[?62;4"));
+static_assert(find_da1("\x1b[?1;0;256S\x1b[?62;1;4c").value() == "62;1;4"); // what Konsole sends
+static_assert(!find_da1("\x1b[?1;0;256S") && !find_da1("\x1b[?1;0;256S\x1b[?62;1;4"));
 static_assert(find_background("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\") == Rgb{30, 30, 46});
 static_assert(find_background("\x1b]11;rgb:ff/80/00\a") == Rgb{255, 128, 0});
 static_assert(find_cell_size("\x1b[6;20;10t") == std::pair{10, 20});
@@ -149,8 +157,9 @@ inline TermInfo probe_terminal(bool query) {
     tcsetattr(fd, TCSANOW, &raw);
 
     // DA1 goes last: every terminal answers it, so its reply marks the end of the batch.
-    // Queries: background colour, cell size, number of Sixel colour registers, then DA1.
-    constexpr std::string_view queries = "\x1b]11;?\x1b\\\x1b[16t\x1b[?1;1;0S\x1b[c";
+    // Queries: background colour, cell size, number of Sixel colour registers, Kitty graphics
+    // (a 1x1 pixel it must accept), then DA1.
+    constexpr std::string_view queries = "\x1b]11;?\x1b\\\x1b[16t\x1b[?1;1;0S\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
     std::string reply;
     if (write(fd, queries.data(), queries.size()) == static_cast<ssize_t>(queries.size())) {
         using clock = std::chrono::steady_clock;
@@ -177,6 +186,7 @@ inline TermInfo probe_terminal(bool query) {
         info.cell_h = cell->second;
     }
     if (const auto registers = detail::find_color_registers(reply)) info.color_registers = *registers;
+    info.kitty = detail::find_kitty_graphics(reply);
     info.background = detail::find_background(reply);
     return info;
 }

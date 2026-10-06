@@ -12,6 +12,7 @@
 #include <string_view>
 #include "app_icon.hpp"
 #include "color.hpp"
+#include "graphics.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_style.hpp"
 #include "ttf_font.hpp"
@@ -41,11 +42,12 @@ struct ConsoleFonts {
     }
 };
 
-// Canvas filled with the terminal background when known (so anti-aliased edges blend),
-// otherwise transparent.
+// Canvas filled with the terminal background when known (so anti-aliased edges blend), otherwise
+// transparent. Kitty has real alpha, so there it always stays transparent and the terminal's own
+// background shows through.
 inline sixel::Canvas window_canvas(int w, int h) {
     const auto& bg = term::g_term.background;
-    return sixel::Canvas(w, h, bg ? Rgba{bg->r, bg->g, bg->b, 255} : Rgba{});
+    return sixel::Canvas(w, h, bg && gfx::g_protocol == gfx::Protocol::Sixel ? Rgba{bg->r, bg->g, bg->b, 255} : Rgba{});
 }
 
 // Draws the window chrome spanning the canvas width from `y` with height `h`.

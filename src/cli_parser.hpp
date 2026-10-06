@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <print>
 #include <string>
@@ -34,6 +35,9 @@ inline void print_help(const char* prog_name) {
     std::println("                           • terminal: TrueColor 24-bit RGB ANSI + in-place mini-terminal");
     std::println("                           • simple: 16-color basic ANSI");
     std::println("                           • none: Plain non-interactive uncolored text");
+    std::println("      --graphics=<proto>   Image protocol for full mode [auto, kitty, sixel]; auto asks the");
+    std::println("                           terminal (Kitty first: 24-bit RGBA with real transparency). Force one");
+    std::println("                           for terminals that answer no queries; also $FSTURBO_GRAPHICS");
     std::println();
     std::println("{}", heading("OUTPUT & VERBOSITY:"));
     std::println("  -v, --verbose, --log     Output scrolling text log of all file modifications");
@@ -111,6 +115,7 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
     RenameOptions opts;
     should_exit = false;
     std::string_view color_mode = "auto";
+    std::string_view graphics = std::getenv("FSTURBO_GRAPHICS") ? std::getenv("FSTURBO_GRAPHICS") : "auto";
     bool want_help = false, want_font = false;
     bool auto_gitignore = true;
     std::vector<fs::path> gitignore_files;
@@ -130,6 +135,10 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
             color_mode = argv[++i];
         } else if (arg == "--color") {
             color_mode = "auto";
+        } else if (arg.starts_with("--graphics=")) {
+            graphics = arg.substr(11);
+        } else if (arg == "--graphics" && has_value && term::is_graphics_name(argv[i + 1])) {
+            graphics = argv[++i];
         } else if (arg == "-v" || arg == "--verbose" || arg == "--log") {
             opts.verbose = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -180,7 +189,7 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
         }
     }
 
-    term::init_terminal(color_mode);
+    term::init_terminal(color_mode, graphics);
 
     // Explicit files first, then the target directory's own .gitignore, which (as in git)
     // takes precedence. All patterns are matched relative to the target directory.

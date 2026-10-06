@@ -4,8 +4,11 @@ everything ends up on screen: printable text, CR/LF with scrolling, cursor movem
 DECSC/DECRC, and Sixel images (only their position and height are tracked). It also answers the
 queries the program's terminal probe sends (background colour, cell size, DA1 with Sixel).
 
-Library use:  screen, status = vt.run(argv, rows, cols, cell_w=10, cell_h=20, registers=1024)
-              registers is the Sixel colour register count it reports (None: it does not answer)
+Library use:  screen, status = vt.run(argv, rows, cols, cell_w=10, cell_h=20, registers=1024,
+                                      sixel=True, kitty=False)
+              registers: the Sixel colour register count it reports (None: it does not answer);
+              sixel: whether its DA1 answer advertises Sixel; kitty: whether it answers the Kitty
+              graphics query. Kitty images (APC G ... chunks, zlib) are reassembled and recorded too.
 Command line: tests/vt.py ROWS COLS COMMAND...   (prints the final screen)
 """
 import codecs
@@ -13,24 +16,32 @@ import fcntl
 import math
 import os
 import re
+import base64
 import select
 import struct
 import sys
 import termios
 import time
 import unicodedata
+import zlib
 
 
 class Screen:
-    def __init__(self, rows, cols, cell_w, cell_h, registers=1024):
+    def __init__(self, rows, cols, cell_w, cell_h, registers=1024, sixel=True, kitty=False):
         self.rows, self.cols, self.cell_w, self.cell_h = rows, cols, cell_w, cell_h
-        self.registers = registers
+        self.registers, self.sixel, self.kitty = registers, sixel, kitty
+        self.keep_pixels = False
+        self.kitty_deletes = 0
+        self._kitty_chunks = None  # (control keys, [base64 parts]) while a chunked image arrives
         self.grid = [[" "] * cols for _ in range(rows)]
         self.r = self.c = 0
         self.saved = (0, 0)
         self.wrap_pending = False
         self.scrolled = 0
-        self.images = []  # {"top", "left", "rows", "height", "colors"}: top is relative to the screen, may go negative
+        # Sixel: {"top", "left", "rows", "height", "colors"}; Kitty: {"kitty": True, "id", "placement",
+        # "cols", "rows", "width", "height", "bytes", "cursor_moves"}. "top" is relative to the screen
+        # and may go negative once the image has scrolled off.
+        self.images = []
         self.replies = b""
         self._state = "n"
         self._buf = ""
@@ -91,6 +102,8 @@ class Screen:
                     self._state = "o"
                 elif ch == "P":
                     self._state, self._dcs_parts = "d", []
+                elif ch == "_":
+                    self._state, self._dcs_parts = "a", []
                 elif ch == "7":
                     self.saved = (self.r, self.c)
                 elif ch == "8":
@@ -124,6 +137,19 @@ class Screen:
                     self._state = "de"
             elif state == "de":
                 self._dcs("".join(self._dcs_parts))
+                self._dcs_parts = []
+                self._state = "n"
+            elif state == "a":  # an APC string (Kitty graphics) runs to ESC \
+                end = text.find("\x1b", i - 1)
+                if end < 0:
+                    self._dcs_parts.append(text[i - 1:])
+                    i = n
+                else:
+                    self._dcs_parts.append(text[i - 1:end])
+                    i = end + 1
+                    self._state = "ae"
+            elif state == "ae":
+                self._apc("".join(self._dcs_parts))
                 self._dcs_parts = []
                 self._state = "n"
 
@@ -165,11 +191,50 @@ class Screen:
         elif final == "S" and private and nums[:3] == [1, 1, 0] and self.registers:
             self.replies += f"\x1b[?1;0;{self.registers}S".encode()
         elif final == "c" and not private and (first is None or first == 0):
-            self.replies += b"\x1b[?62;4;22c"  # a Sixel-capable terminal
+            self.replies += b"\x1b[?62;4;22c" if self.sixel else b"\x1b[?62;22c"
 
     def _osc(self, text):
         if text == "11;?":
             self.replies += b"\x1b]11;rgb:0e0e/0e0e/1a1a\x1b\\"
+
+    def _apc(self, text):
+        """Kitty graphics: G<control>;<base64 payload>, possibly in chunks (m=1 ... m=0)."""
+        if not text.startswith("G"):
+            return
+        control, _, payload = text[1:].partition(";")
+        keys = dict(kv.split("=", 1) for kv in control.split(",") if "=" in kv)
+        if self._kitty_chunks is not None:  # a continuation: only m (and q) are meaningful
+            first, parts = self._kitty_chunks
+            parts.append(payload)
+            if keys.get("m") == "1":
+                return
+            self._kitty_chunks = None
+            self._kitty_image(first, "".join(parts))
+            return
+        action = keys.get("a", "t")
+        if action == "q":
+            if self.kitty:
+                self.replies += f"\x1b_Gi={keys.get('i', '0')};OK\x1b\\".encode()
+        elif action == "d":
+            self.kitty_deletes += 1
+        elif action in ("T", "t"):
+            if keys.get("m") == "1":
+                self._kitty_chunks = (keys, [payload])
+            else:
+                self._kitty_image(keys, payload)
+
+    def _kitty_image(self, keys, payload):
+        raw = base64.b64decode(payload)
+        if keys.get("o") == "z":
+            raw = zlib.decompress(raw)
+        width, height = int(keys.get("s", 0)), int(keys.get("v", 0))
+        rows = int(keys["r"]) if "r" in keys else math.ceil(height / self.cell_h)
+        cols = int(keys["c"]) if "c" in keys else math.ceil(width / self.cell_w)
+        if keys.get("a", "t") == "T":
+            self.images.append({"kitty": True, "id": int(keys.get("i", 0)), "placement": int(keys.get("p", 0)), "top": self.r, "left": self.c,
+                                "rows": rows, "cols": cols, "width": width, "height": height, "bytes": len(raw), "format": int(keys.get("f", 32)),
+                                "expected": width * height * (4 if keys.get("f", "32") == "32" else 3), "quiet": keys.get("q"),
+                                "cursor_moves": keys.get("C") != "1", "pixels": raw if self.keep_pixels else None})
 
     def _dcs(self, text):
         m = re.match(r'^[\d;]*q"(\d+);(\d+);(\d+);(\d+)', text)
@@ -187,9 +252,10 @@ class Screen:
         return "\n".join(out)
 
 
-def run(argv, rows, cols, cell_w=10, cell_h=20, cwd=None, timeout=30, registers=1024):
+def run(argv, rows, cols, cell_w=10, cell_h=20, cwd=None, timeout=30, registers=1024, sixel=True, kitty=False, keep_pixels=False, env=None):
     """Returns (Screen, exit status)."""
-    screen = Screen(rows, cols, cell_w, cell_h, registers)
+    screen = Screen(rows, cols, cell_w, cell_h, registers, sixel, kitty)
+    screen.keep_pixels = keep_pixels
     master, slave = os.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * cell_w, rows * cell_h))
     pid = os.fork()
@@ -202,6 +268,7 @@ def run(argv, rows, cols, cell_w=10, cell_h=20, cwd=None, timeout=30, registers=
         if cwd:
             os.chdir(cwd)
         os.environ["TERM"] = "xterm-256color"
+        os.environ.update(env or {})
         try:
             os.execvp(argv[0], argv)
         finally:
