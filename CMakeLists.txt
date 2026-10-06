@@ -98,6 +98,8 @@ target_link_options(fsturbotransform PRIVATE
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-8)
 target_link_libraries(fsturbotransform PRIVATE PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
+# Where the bridge gets installed: also searched at run time (bin/ may be a symlink).
+target_compile_definitions(fsturbotransform PRIVATE FSTURBO_LIBDIR="${CMAKE_INSTALL_PREFIX}/lib/fsturbotransform")
 
 # JavaScript expression bridge: V8 used as a library through libnode (libnode-dev), loaded
 # with dlopen only when a replacement contains an expression. It builds next to the executable

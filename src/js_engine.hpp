@@ -36,8 +36,9 @@ class Engine {
 
     Engine() = default;
 
-    // $FSTURBO_JS_LIB, then next to the executable and in the installed ../lib/fsturbotransform
-    // (<prefix>/bin -> <prefix>/lib/fsturbotransform), then the dynamic loader's own search.
+    // $FSTURBO_JS_LIB, then next to the executable and in ../lib/fsturbotransform relative to it,
+    // then the directory this build installs the bridge to (FSTURBO_LIBDIR: needed when bin/ is a
+    // symlink, because /proc/self/exe is the real path), then the dynamic loader's own search.
     static std::vector<std::string> candidates() {
         constexpr const char* kName = "libfsturbo_js.so";
         std::vector<std::string> out;
@@ -48,6 +49,9 @@ class Engine {
             out.push_back((exe.parent_path() / kName).string());
             out.push_back((exe.parent_path() / ".." / "lib" / "fsturbotransform" / kName).string());
         }
+#ifdef FSTURBO_LIBDIR
+        out.push_back((std::filesystem::path(FSTURBO_LIBDIR) / kName).string());
+#endif
         out.emplace_back(kName);
         return out;
     }
@@ -62,16 +66,17 @@ public:
 
     static std::unique_ptr<Engine> create(std::string& error) {
         void* lib = nullptr;
-        std::string last_error;
+        std::string last_error, looked_in;
         for (const std::string& path : candidates()) {
             lib = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+            looked_in += (looked_in.empty() ? "" : ", ") + path;
             if (lib != nullptr) break;
             // A candidate that exists but cannot load (say, libnode missing) says more than "No such file".
             if (const char* why = dlerror(); why != nullptr && (last_error.empty() || std::string_view(why).find("No such file") == std::string_view::npos))
                 last_error = why;
         }
         if (lib == nullptr) {
-            error = "JavaScript expressions need libfsturbo_js.so (built when libnode-dev is installed; set FSTURBO_JS_LIB to its path): " + last_error;
+            error = "JavaScript expressions need libfsturbo_js.so (built when libnode-dev is installed; set FSTURBO_JS_LIB to its path). Looked in: " + looked_in + " (" + last_error + ")";
             return nullptr;
         }
 

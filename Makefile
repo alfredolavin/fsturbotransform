@@ -6,7 +6,7 @@ endif
 # PCRE2 (libpcre2-dev) is the regex engine, used as a system library.
 PCRE2_CFLAGS := $(shell pkg-config --cflags libpcre2-8 2>/dev/null)
 PCRE2_LIBS := $(shell pkg-config --libs libpcre2-8 2>/dev/null || echo -lpcre2-8)
-CXXFLAGS = -std=c++26 -O3 -march=native -flto -ffast-math -pthread -Wall -Wextra -Isrc $(PCRE2_CFLAGS)
+CXXFLAGS = -std=c++26 -O3 -march=native -flto -ffast-math -pthread -Wall -Wextra -Isrc $(PCRE2_CFLAGS) -DFSTURBO_LIBDIR='"$(LIBDIR)"'
 LDFLAGS = -static-libstdc++ -static-libgcc -pthread -flto -ldl $(PCRE2_LIBS)
 
 PREFIX ?= $(HOME)/.local
