@@ -99,6 +99,13 @@ public:
                 blend(ox + x, oy + y, c, g.coverage[static_cast<std::size_t>(y) * static_cast<std::size_t>(g.width) + static_cast<std::size_t>(x)]);
     }
 
+    // Composites another canvas (opaque pixels only) with its top-left corner at (x, y).
+    constexpr void draw_image(const Canvas& src, int x, int y) {
+        for (int sy = 0; sy < src.h_; ++sy)
+            for (int sx = 0; sx < src.w_; ++sx)
+                if (const Rgba p = src.px_[src.offset(sx, sy)]; p.a >= 128) put(x + sx, y + sy, p.rgb());
+    }
+
     // Draws UTF-8 text on a fixed monospace grid; returns the pen position after the text.
     int draw_text(ttf::GlyphCache& gc, int x, int baseline, std::string_view text, Rgb c, int advance) {
         ttf::for_each_codepoint(text, [&](char32_t cp) {

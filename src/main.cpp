@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <format>
 #include <print>
+#include <string>
+#include <vector>
 #include "cli_parser.hpp"
 #include "fira_code_font.hpp"
 #include "renamer.hpp"
+#include "report_view.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_style.hpp"
 
@@ -33,34 +36,28 @@ inline void render_header() {
 }
 
 inline void render_footer(const ExecutionStats& stats, bool dry_run) {
-    using namespace term;
     using sixel::Icon;
 
-    const auto row = [](Icon icon, std::string_view label, auto value, Rgb color) {
-        std::print("{}", icon_line(icon, std::format("{:<20}: {}{}{}{}", label, bold(), rgb_fg(color), value, reset())));
+    std::vector<ui::ReportRow> rows{
+        {Icon::Folder, "Scanned Directories", std::format("{}", stats.scanned_dirs), {230, 230, 240}},
+        {Icon::File, "Scanned Files", std::format("{}", stats.scanned_files), {230, 230, 240}},
+        {Icon::Rename, "Renamed Files", std::format("{}", stats.renamed_files), {100, 255, 100}},
+        {Icon::Rename, "Renamed Directories", std::format("{}", stats.renamed_dirs), {100, 220, 255}},
+        {Icon::Flatten, "Flattened Files", std::format("{}", stats.flattened_files), {255, 200, 50}},
+        {Icon::Exclude, "Excluded Items", std::format("{}", stats.excluded_items), {180, 180, 180}},
     };
+    if (stats.errors > 0) [[unlikely]] {
+        rows.push_back({Icon::Error, "Errors Encountered", std::format("{}", stats.errors), {255, 50, 50}});
+    }
+    rows.push_back({Icon::Success, "Execution Time", std::format("{:.2f} ms", stats.duration_ms), {0, 255, 200}});
+    rows.push_back({Icon::Font, "Embedded Font", std::format("{} v{} ({} bytes)", FIRA_CODE_FONT_NAME, FIRA_CODE_VERSION, fira_code_ttf_len), {255, 150, 255}});
+
+    std::string status = dry_run ? "DRY RUN · NO FILES MODIFIED" : "COMPLETED";
+    if (stats.errors > 0) status = std::format("{}{} ERROR{}", dry_run ? "DRY RUN · " : "", stats.errors, stats.errors == 1 ? "" : "S");
+    const Rgb status_color = stats.errors > 0 ? palette::error : dry_run ? palette::action : palette::dest;
 
     std::println();
-    std::println("{}", gradient_text(" ══════════════════════════ EXECUTION REPORT ══════════════════════════", Rgb{0, 255, 180}, Rgb{50, 150, 255}));
-
-    if (dry_run) [[unlikely]] {
-        std::print("{}", icon_line(Icon::Rocket, std::format("{}{}[DRY RUN MODE - NO FILES MODIFIED]{}", bold(), rgb_fg({255, 200, 0}), reset())));
-        std::println();
-    }
-
-    row(Icon::Folder, "Scanned Directories", stats.scanned_dirs, {230, 230, 240});
-    row(Icon::File, "Scanned Files", stats.scanned_files, {230, 230, 240});
-    row(Icon::Rename, "Renamed Files", stats.renamed_files, {100, 255, 100});
-    row(Icon::Rename, "Renamed Directories", stats.renamed_dirs, {100, 220, 255});
-    row(Icon::Flatten, "Flattened Files", stats.flattened_files, {255, 200, 50});
-    row(Icon::Exclude, "Excluded Items", stats.excluded_items, {180, 180, 180});
-    if (stats.errors > 0) [[unlikely]] {
-        row(Icon::Error, "Errors Encountered", stats.errors, {255, 50, 50});
-    }
-    row(Icon::Success, "Execution Time", std::format("{:.2f} ms", stats.duration_ms), {0, 255, 200});
-    row(Icon::Font, "Embedded Font", std::format("{} v{} ({} bytes)", FIRA_CODE_FONT_NAME, FIRA_CODE_VERSION, fira_code_ttf_len), {255, 150, 255});
-
-    std::println("{}", gradient_text(" ══════════════════════════════════════════════════════════════════════", Rgb{50, 150, 255}, palette::neon_pink));
+    ui::print_report(rows, {std::move(status), status_color});
     std::println();
 }
 

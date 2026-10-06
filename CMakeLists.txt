@@ -43,10 +43,12 @@ set(HEADERS
     src/case_converter.hpp
     src/cli_parser.hpp
     src/color.hpp
+    src/console_window.hpp
     src/dashboard.hpp
     src/fira_code_font.hpp
     src/matcher.hpp
     src/renamer.hpp
+    src/report_view.hpp
     src/sixel_renderer.hpp
     src/terminal_probe.hpp
     src/terminal_style.hpp

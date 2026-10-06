@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+#include "console_window.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_style.hpp"
 
@@ -114,7 +115,7 @@ class LiveDashboard {
         int win_y = 0, title_baseline = 0, text_x = 0, text_cols = 0;
         std::array<int, 3> line_baseline{};
     } geo_;
-    std::optional<ttf::GlyphCache> regular_, bold_;
+    std::optional<ui::ConsoleFonts> fonts_;
     sixel::Canvas base_, frame_;
 
     void configure() {
@@ -122,7 +123,7 @@ class LiveDashboard {
         interactive_ = term::interactive() && g_term.cols >= 40 && g_term.rows >= kFrameRows + 4;
         if (!interactive_) return;
         sixel_ = g_color_mode == ColorMode::Full;
-        width_cols_ = std::min(g_term.cols - 1, 100);
+        width_cols_ = ui::window_columns();
         interval_ = std::chrono::milliseconds(sixel_ ? 50 : 33);
         if (sixel_) build_sixel_chrome();
     }
@@ -228,26 +229,8 @@ class LiveDashboard {
         out += "\n";
 
         // Row 1: window top edge with title and live stats
-        const std::string stats = stats_text(now);
-        const int title_cols = static_cast<int>(ttf::utf8_length(kTitle));
-        const int stats_cols = static_cast<int>(ttf::utf8_length(stats));
-        const int dashes = std::max(1, W - 8 - title_cols - stats_cols);
         out += "\x1b[2K";
-        out += border;
-        out += "┌─ ";
-        out += bold();
-        out += rgb_fg(palette::console_title);
-        out += kTitle;
-        out += reset_s;
-        out += border;
-        out += " ";
-        for (int i = 0; i < dashes; ++i) out += "─";
-        out += " ";
-        out += rgb_fg(palette::note);
-        out += stats;
-        out += border;
-        out += " ─┐";
-        out += reset_s;
+        out += ui::ansi_window_top(W, kTitle, stats_text(now), palette::note);
         out += "\n";
 
         // Rows 2-4: console history + active line
@@ -256,37 +239,28 @@ class LiveDashboard {
         const bool cursor_on = (ms / 530) % 2 == 0;
         for (std::size_t li = 0; li < laid_.size(); ++li) {
             const LaidOutLine& l = laid_[li];
-            out += "\x1b[2K";
-            out += border;
-            out += "│ ";
-            out += reset_s;
+            std::string content;
             for (const Span& s : l.spans) {
-                if (s.role == Role::Action) out += bold();
-                if (s.role != Role::Plain) out += rgb_fg(role_color(s.role));
-                out += s.text;
-                out += reset_s;
+                if (s.role == Role::Action) content += bold();
+                if (s.role != Role::Plain) content += rgb_fg(role_color(s.role));
+                content += s.text;
+                content += reset_s;
             }
             std::size_t used = l.cols;
             if (li == 2 && used < inner) {
-                out += rgb_fg(palette::neon_cyan);
-                out += cursor_on ? "▌" : " ";
-                out += reset_s;
+                content += rgb_fg(palette::neon_cyan);
+                content += cursor_on ? "▌" : " ";
+                content += reset_s;
                 ++used;
             }
-            for (; used < inner; ++used) out += ' ';
-            out += border;
-            out += " │";
-            out += reset_s;
+            out += "\x1b[2K";
+            out += ui::ansi_window_row(W, content, used);
             out += "\n";
         }
 
         // Row 5: bottom edge (no trailing newline: the frame must not scroll)
         out += "\x1b[2K";
-        out += border;
-        out += "└";
-        for (int i = 0; i < W - 2; ++i) out += "─";
-        out += "┘";
-        out += reset_s;
+        out += ui::ansi_window_bottom(W);
         return out;
     }
 
@@ -295,22 +269,16 @@ class LiveDashboard {
     void build_sixel_chrome() {
         const int ch = g_term.cell_height();
         const int cw = g_term.cell_width();
-        const auto& fonts = sixel::ui_fonts();
-        const float px = static_cast<float>(ch) / 1.32f;
-        regular_.emplace(fonts.regular, px);
-        bold_.emplace(fonts.bold, px);
+        ui::ConsoleFonts& f = fonts_.emplace(ch);
 
         Geometry& g = geo_;
         g.cell_h = ch;
-        g.adv = std::max(1, static_cast<int>(std::lround(regular_->advance())));
+        g.adv = f.adv;
         g.w = width_cols_ * cw;
         g.h = kFrameRows * ch;
         reserved_rows_ = kFrameRows + 1; // spare row absorbs any post-image cursor advance
 
-        const float asc = regular_->ascent(), desc = regular_->descent();
-        auto baseline_in = [&](float top, float height) {
-            return static_cast<int>(std::lround(top + (height - (asc + desc)) * 0.5f + asc));
-        };
+        auto baseline_in = [&](float top, float height) { return f.baseline_in(top, height); };
         const float W = static_cast<float>(g.w), CH = static_cast<float>(ch);
 
         g.bar_h = std::max(4.0f, CH * 0.42f);
@@ -322,14 +290,12 @@ class LiveDashboard {
         g.progress_cols = std::max(0, (g.w - g.progress_text_x - static_cast<int>(CH * 0.5f)) / g.adv);
 
         g.win_y = static_cast<int>(std::lround(CH * 1.25f));
-        g.title_baseline = baseline_in(static_cast<float>(g.win_y), CH);
         g.text_x = g.adv;
         g.text_cols = std::max(10, (g.w - 2 * g.adv) / g.adv);
         const float lines_top = static_cast<float>(g.win_y) + CH * 1.2f;
         for (int i = 0; i < 3; ++i) g.line_baseline[static_cast<std::size_t>(i)] = baseline_in(lines_top + static_cast<float>(i) * CH, CH);
 
-        const Rgba clear = g_term.background ? Rgba{g_term.background->r, g_term.background->g, g_term.background->b, 255} : Rgba{};
-        base_ = sixel::Canvas(g.w, g.h, clear);
+        base_ = ui::window_canvas(g.w, g.h);
         sixel::Canvas& c = base_;
 
         // Progress pill
@@ -338,23 +304,14 @@ class LiveDashboard {
         c.fill_rounded_rect(g.bar_x, g.bar_y, g.bar_w, g.bar_h, g.bar_h * 0.5f, palette::track);
 
         // Console window with title bar and traffic lights
-        const float wy = static_cast<float>(g.win_y), wh = static_cast<float>(g.h) - wy - 1.0f, r = CH * 0.4f;
-        c.fill_rounded_rect(0.0f, wy, W, wh, r, palette::console_border);
-        c.fill_rounded_rect(1.0f, wy + 1.0f, W - 2.0f, wh - 2.0f, r - 1.0f, palette::console_bg);
-        c.fill_rounded_rect(1.0f, wy + 1.0f, W - 2.0f, CH, r - 1.0f, palette::console_title_bg);
-        c.fill_rect(1, static_cast<int>(wy + CH * 0.5f), g.w - 2, static_cast<int>(CH * 0.5f) + 1, palette::console_title_bg);
-        c.fill_rect(1, static_cast<int>(wy) + 1 + ch, g.w - 2, 1, palette::console_border);
-        const std::array<Rgb, 3> lights{{{255, 95, 86}, {255, 189, 46}, {39, 201, 63}}};
-        for (std::size_t i = 0; i < lights.size(); ++i)
-            c.fill_circle(CH * 0.7f + static_cast<float>(i) * CH * 0.6f, wy + 1.0f + CH * 0.5f, CH * 0.17f, lights[i]);
-        const int title_cols = static_cast<int>(ttf::utf8_length(kTitle));
-        c.draw_text(*bold_, (g.w - title_cols * g.adv) / 2, g.title_baseline, kTitle, palette::console_title, g.adv);
+        const float wy = static_cast<float>(g.win_y);
+        g.title_baseline = ui::draw_console_window(c, f, wy, static_cast<float>(g.h) - wy - 1.0f, kTitle);
         frame_ = base_;
     }
 
     void draw_spans(const std::vector<Span>& spans, int x, int baseline) {
         for (const Span& s : spans) {
-            ttf::GlyphCache& gc = s.role == Role::Action ? *bold_ : *regular_;
+            ttf::GlyphCache& gc = s.role == Role::Action ? fonts_->bold : fonts_->regular;
             x = frame_.draw_text(gc, x, baseline, s.text, role_color(s.role), geo_.adv);
         }
     }
@@ -382,13 +339,11 @@ class LiveDashboard {
         // Progress text: phase (bold) + percentage + counts
         const std::string text = fit_right(progress_text(), static_cast<std::size_t>(g.progress_cols));
         const std::size_t phase_len = std::min(text.size(), phase_.size());
-        int x = frame_.draw_text(*bold_, g.progress_text_x, g.row0_baseline, std::string_view(text).substr(0, phase_len), palette::action, g.adv);
-        frame_.draw_text(*regular_, x, g.row0_baseline, std::string_view(text).substr(phase_len), palette::path_name, g.adv);
+        int x = frame_.draw_text(fonts_->bold, g.progress_text_x, g.row0_baseline, std::string_view(text).substr(0, phase_len), palette::action, g.adv);
+        frame_.draw_text(fonts_->regular, x, g.row0_baseline, std::string_view(text).substr(phase_len), palette::path_name, g.adv);
 
         // Live stats right-aligned in the title bar
-        const std::string stats = stats_text(now);
-        const int stats_cols = static_cast<int>(ttf::utf8_length(stats));
-        frame_.draw_text(*regular_, g.w - (stats_cols + 1) * g.adv, g.title_baseline, stats, palette::note, g.adv);
+        ui::draw_title_status(frame_, *fonts_, g.title_baseline, stats_text(now), palette::note);
 
         // Console lines + blinking block cursor on the active line
         layout_console(static_cast<std::size_t>(g.text_cols - 1));
@@ -396,7 +351,7 @@ class LiveDashboard {
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - run_start_).count();
         if ((ms / 530) % 2 == 0) {
             const int cx = g.text_x + static_cast<int>(laid_[2].cols) * g.adv;
-            frame_.draw_text(*regular_, cx, g.line_baseline[2], "▌", palette::neon_cyan, g.adv);
+            frame_.draw_text(fonts_->regular, cx, g.line_baseline[2], "▌", palette::neon_cyan, g.adv);
         }
         return sixel::encode(frame_);
     }
