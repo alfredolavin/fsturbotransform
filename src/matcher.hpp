@@ -1,12 +1,17 @@
 #ifndef MATCHER_HPP
 #define MATCHER_HPP
 
+#include <expected>
 #include <fstream>
 #include <initializer_list>
-#include <regex>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+#include "js_engine.hpp"
+#include "named_groups.hpp"
+#include "pcre2_regex.hpp"
+#include "replace_template.hpp"
 
 namespace fsturbo {
 
@@ -19,7 +24,7 @@ constexpr bool is_regex_spec(std::string_view spec) {
     return false;
 }
 
-// Anchored glob match without std::regex:
+// Anchored glob match (no regex engine involved):
 //   **  (optionally followed by '/') matches any characters, including '/'
 //   *   matches any characters except '/'
 //   ?   matches one character except '/'
@@ -267,7 +272,7 @@ static_assert(detail::gitignored({"[Bb]in/"}, "Bin", true) && !detail::gitignore
 struct PatternRule {
     bool is_negated = false; // Starts with !
     bool is_regex = false;
-    std::regex rx;           // regex rules only
+    Regex rx;                // regex rules only
     std::string glob;        // glob rules only
     std::string raw_pattern;
 
@@ -292,15 +297,8 @@ struct PatternRule {
         if (is_regex_spec(input)) {
             rule.is_regex = true;
             const std::size_t last_slash = input.rfind('/');
-            const std::string pattern_body(input.substr(1, last_slash - 1));
-            auto syntax_flags = std::regex_constants::ECMAScript;
-            for (const char f : input.substr(last_slash + 1))
-                if (f == 'i') syntax_flags |= std::regex_constants::icase;
-            try {
-                rule.rx = std::regex(pattern_body, syntax_flags);
-            } catch (const std::regex_error&) {
-                rule.raw_pattern.clear(); // invalid regex never matches
-            }
+            if (auto compiled = Regex::compile(input.substr(1, last_slash - 1), input.substr(last_slash + 1))) rule.rx = std::move(*compiled);
+            else rule.raw_pattern.clear(); // invalid regex never matches
         } else {
             if (input.starts_with("./")) input.remove_prefix(2);
             rule.glob = input;
@@ -311,7 +309,7 @@ struct PatternRule {
     bool matches(std::string_view path) const {
         if (raw_pattern.empty()) return false;
         if (!is_regex) return glob_match(glob, path);
-        return std::regex_search(path.begin(), path.end(), rx);
+        return rx.search(path);
     }
 };
 
@@ -354,21 +352,41 @@ public:
     }
 };
 
-// Helper for parsing raw regex pattern e.g. /pattern/replace/flags or /pattern/
+// A parsed /pattern/replacement/flags spec. The pattern may use named groups, and the
+// replacement may use expressions (see replace_template.hpp); both are prepared here, once.
 struct RegexSpec {
-    std::regex rx;
+    Regex rx;
     std::string replacement;
+    ReplaceTemplate tmpl;
+    std::unique_ptr<js::Engine> engine; // owns the compiled expressions of `tmpl`
     bool valid = false;
+    std::string error; // why the spec is not valid
 
-    static RegexSpec parse(std::string_view spec) {
+    // The named groups PCRE2 found, with the arrow ("=>") information `numeric` carries.
+    static ParsedPattern describe_groups(const Regex& rx, const std::vector<std::string>& numeric) {
+        ParsedPattern out;
+        out.group_count = rx.group_count();
+        for (auto& [name, index] : rx.group_names()) {
+            const bool is_numeric = std::ranges::find(numeric, name) != numeric.end();
+            out.groups.push_back({std::move(name), index, is_numeric});
+        }
+        return out;
+    }
+
+    // `with_replacement` is false for specs that only select (--flatten-regex).
+    static RegexSpec parse(std::string_view spec, bool with_replacement = true) {
         RegexSpec res;
-        if (!is_regex_spec(spec)) return res;
+        if (!is_regex_spec(spec)) {
+            res.error = "expected /pattern/replacement/flags";
+            return res;
+        }
 
         std::vector<std::string> parts;
         std::string current;
         bool escaped = false;
 
-        for (const char c : spec) {
+        for (std::size_t i = 0; i < spec.size(); ++i) {
+            const char c = spec[i];
             if (escaped) {
                 current += c;
                 escaped = false;
@@ -378,6 +396,15 @@ struct RegexSpec {
             } else if (c == '/') {
                 parts.push_back(std::move(current));
                 current.clear();
+            } else if (c == '{' && with_replacement && parts.size() == 2 && ends_with_expression_head(current)) {
+                // The replacement's "\<name=>{...}" block is JavaScript: its '/' (division) is not a separator.
+                const std::size_t close = find_expression_end(spec, i);
+                if (close == std::string_view::npos) {
+                    current += c; // the template parser reports the unclosed block
+                } else {
+                    current.append(spec.substr(i, close - i + 1));
+                    i = close;
+                }
             } else {
                 current += c;
             }
@@ -385,25 +412,61 @@ struct RegexSpec {
         parts.push_back(std::move(current));
 
         // parts[0] is empty (before first /)
-        if (parts.size() >= 3) {
-            const std::string& pattern = parts[1];
-            const std::string replace = (parts.size() >= 4) ? parts[2] : "";
-            const std::string& flags = (parts.size() >= 4) ? parts[3] : parts[2];
+        if (parts.size() < 3) {
+            res.error = "expected /pattern/replacement/flags";
+            return res;
+        }
+        const std::string& pattern = parts[1];
+        const std::string replace = (parts.size() >= 4) ? parts[2] : "";
+        const std::string& flags = (parts.size() >= 4) ? parts[3] : parts[2];
 
-            auto syntax_flags = std::regex_constants::ECMAScript;
-            for (const char f : flags) {
-                if (f == 'i') syntax_flags |= std::regex_constants::icase;
+        const ArrowPattern arrows = strip_numeric_arrows(pattern);
+        auto compiled = Regex::compile(arrows.pattern, flags);
+        if (!compiled) {
+            res.error = "invalid regular expression: " + compiled.error();
+            return res;
+        }
+        res.rx = std::move(*compiled);
+        res.replacement = replace;
+
+        if (with_replacement) {
+            const ParsedPattern groups = describe_groups(res.rx, arrows.numeric);
+            auto tmpl = ReplaceTemplate::parse(replace, groups);
+            if (!tmpl) {
+                res.error = tmpl.error();
+                return res;
             }
-
-            try {
-                res.rx = std::regex(pattern, syntax_flags);
-                res.replacement = replace;
-                res.valid = true;
-            } catch (const std::regex_error&) {
-                res.valid = false;
+            res.tmpl = std::move(*tmpl);
+            if (res.tmpl.has_expressions()) {
+                std::string why;
+                res.engine = js::Engine::create(why);
+                if (!res.engine) {
+                    res.error = why;
+                    return res;
+                }
+                if (const auto built = res.tmpl.compile(*res.engine, groups); !built) {
+                    res.error = built.error();
+                    return res;
+                }
             }
         }
+        res.valid = true;
         return res;
+    }
+
+    // Replaces every match in `name`; fails if an expression (or the engine) does.
+    std::expected<std::string, std::string> apply(const std::string& name, const EntryContext& ctx) const {
+        std::string result;
+        result.reserve(name.size() + replacement.size());
+        std::size_t last_pos = 0;
+        const auto walked = rx.for_each_match(name, [&](const MatchView& match) -> std::expected<void, std::string> {
+            result.append(name, last_pos, match.start() - last_pos);
+            last_pos = match.end();
+            return tmpl.expand(result, match, ctx, engine.get());
+        });
+        if (!walked) return std::unexpected(walked.error());
+        result.append(name, last_pos, std::string::npos);
+        return result;
     }
 };
 

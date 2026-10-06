@@ -48,8 +48,13 @@ set(HEADERS
     src/console_window.hpp
     src/dashboard.hpp
     src/fira_code_font.hpp
+    src/js_bridge_api.h
+    src/js_engine.hpp
     src/matcher.hpp
+    src/named_groups.hpp
+    src/pcre2_regex.hpp
     src/renamer.hpp
+    src/replace_template.hpp
     src/report_view.hpp
     src/sixel_renderer.hpp
     src/terminal_probe.hpp
@@ -86,6 +91,35 @@ target_link_options(fsturbotransform PRIVATE
     -pthread
     -flto
 )
+
+# PCRE2 (libpcre2-dev) is the regex engine, used as a system library; dlopen is how the
+# JavaScript bridge below is loaded on first use.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-8)
+target_link_libraries(fsturbotransform PRIVATE PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
+
+# JavaScript expression bridge: V8 used as a library through libnode (libnode-dev), loaded
+# with dlopen only when a replacement contains an expression. It builds next to the executable
+# (which looks beside itself first) and installs to <prefix>/lib/fsturbotransform. Without the V8
+# headers it is skipped and expression replacements report an error at run time.
+option(FSTURBO_JS "Build libfsturbo_js.so, which evaluates -r replacement expressions (needs libnode-dev)" ON)
+if(FSTURBO_JS)
+    find_path(V8_INCLUDE_DIR v8.h PATH_SUFFIXES node)
+    find_library(V8_LIBRARY NAMES node)
+    if(V8_INCLUDE_DIR AND V8_LIBRARY)
+        add_library(fsturbo_js SHARED src/js_bridge.cpp src/js_bridge_api.h)
+        target_include_directories(fsturbo_js SYSTEM PRIVATE ${V8_INCLUDE_DIR})
+        target_include_directories(fsturbo_js PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        # No -ffast-math here: the bridge's NaN/Infinity checks must stay meaningful.
+        target_compile_options(fsturbo_js PRIVATE -O2 -Wall -Wextra)
+        target_link_libraries(fsturbo_js PRIVATE ${V8_LIBRARY})
+        set_target_properties(fsturbo_js PROPERTIES CXX_VISIBILITY_PRESET hidden)
+        add_dependencies(fsturbotransform fsturbo_js)
+        install(TARGETS fsturbo_js LIBRARY DESTINATION lib/fsturbotransform)
+    else()
+        message(WARNING "V8 headers/libnode not found (libnode-dev): building without libfsturbo_js.so")
+    endif()
+endif()
 
 # Standard installation into <prefix>/bin (default: ~/.local/bin)
 install(TARGETS fsturbotransform

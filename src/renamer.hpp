@@ -3,12 +3,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <functional>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <unistd.h>
@@ -16,6 +19,7 @@
 #include "dashboard.hpp"
 #include "matcher.hpp"
 #include "terminal_style.hpp"
+#include "ttf_font.hpp"
 
 namespace fs = std::filesystem;
 
@@ -51,6 +55,8 @@ class TransformerEngine {
     ExecutionStats stats;
     RegexSpec rename_rx_spec;
     RegexSpec flatten_rx_spec;
+    std::string config_error_; // an invalid --regex / --flatten-regex: reported by run() before anything is touched
+    fs::path cwd_;             // where the program was started: the origin of the `depth` variable
     term::LiveDashboard dashboard;
 
     void report_error(std::string_view message) {
@@ -97,12 +103,25 @@ class TransformerEngine {
 
 public:
     explicit TransformerEngine(RenameOptions options) : opts(std::move(options)) {
-        if (!opts.regex_rename.empty()) rename_rx_spec = RegexSpec::parse(opts.regex_rename);
-        if (!opts.flatten_regex.empty()) flatten_rx_spec = RegexSpec::parse(opts.flatten_regex);
+        std::error_code ec;
+        cwd_ = fs::current_path(ec);
+        if (!opts.regex_rename.empty()) {
+            rename_rx_spec = RegexSpec::parse(opts.regex_rename);
+            if (!rename_rx_spec.valid) config_error_ = std::format("Invalid --regex '{}': {}", opts.regex_rename, rename_rx_spec.error);
+        }
+        if (!opts.flatten_regex.empty()) {
+            flatten_rx_spec = RegexSpec::parse(opts.flatten_regex, false);
+            if (!flatten_rx_spec.valid) config_error_ = std::format("Invalid --flatten-regex '{}': {}", opts.flatten_regex, flatten_rx_spec.error);
+        }
     }
 
     ExecutionStats run() {
         const auto start_time = std::chrono::steady_clock::now();
+
+        if (!config_error_.empty()) [[unlikely]] {
+            report_error(config_error_);
+            return stats;
+        }
 
         std::error_code ec;
         if (!fs::is_directory(opts.target_dir, ec)) [[unlikely]] {
@@ -131,7 +150,7 @@ private:
             if (excluded || is_dir || rel.find('/') == std::string_view::npos) return;
             std::error_code ec;
             if (!(entry.is_regular_file(ec) || entry.is_symlink(ec))) return;
-            if (!opts.flatten_regex.empty() && flatten_rx_spec.valid && !std::regex_search(rel.begin(), rel.end(), flatten_rx_spec.rx)) return;
+            if (!opts.flatten_regex.empty() && flatten_rx_spec.valid && !flatten_rx_spec.rx.search(rel)) return;
             files_to_flatten.push_back(entry.path());
         });
 
@@ -200,6 +219,8 @@ private:
             fs::directory_entry entry;
             std::size_t sort_key; // path length: a child always sorts before its parent
             bool is_dir;
+            std::size_t index = 0;      // `index` / `nameIndex` expression variables
+            std::size_t name_index = 0;
         };
         std::vector<Item> items;
 
@@ -209,6 +230,7 @@ private:
             if (!excluded) items.push_back({entry, entry.path().native().size(), is_dir});
         });
 
+        if (rename_rx_spec.valid && rename_rx_spec.tmpl.has_expressions()) number_items(items);
         std::ranges::sort(items, std::greater{}, &Item::sort_key);
 
         const std::size_t total = items.size();
@@ -218,11 +240,23 @@ private:
             const Item& item = items[i];
             const fs::path& path = item.entry.path();
             const std::string filename = path.filename().string();
-            const std::string new_filename = transform_name(filename);
             const std::string rel_str = path.lexically_relative(root).string();
+            const EntryContext ctx{item.index, item.name_index, ttf::utf8_length(filename), depth_of(path)};
+            const auto renamed = transform_name(filename, ctx);
+            if (!renamed) {
+                dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                report_error(std::format("Skipped {}: {}", rel_str, renamed.error()));
+                continue;
+            }
+            const std::string& new_filename = *renamed;
 
             if (filename == new_filename) {
                 dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                continue;
+            }
+            if (!is_valid_name(new_filename)) {
+                dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                report_error(std::format("Skipped {}: '{}' is not a valid file name", rel_str, new_filename));
                 continue;
             }
 
@@ -255,8 +289,47 @@ private:
         }
     }
 
-    std::string transform_name(const std::string& name) const {
-        std::string result = rename_rx_spec.valid ? apply_regex_replace(name, rename_rx_spec.rx, rename_rx_spec.replacement) : name;
+    // Numbers the entries for the `index` (per kind: files, directories) and `nameIndex` (among
+    // entries of the same name) variables. The order is by path, so it does not depend on the
+    // filesystem's directory order or on the order the renames happen in.
+    template <typename Items>
+    static void number_items(Items& items) {
+        std::vector<std::size_t> order(items.size());
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::ranges::sort(order, {}, [&](std::size_t i) -> const std::string& { return items[i].entry.path().native(); });
+        std::size_t counts[2] = {0, 0};
+        std::unordered_map<std::string, std::size_t> same_name[2];
+        for (const std::size_t i : order) {
+            auto& item = items[i];
+            const std::size_t kind = item.is_dir ? 1 : 0;
+            item.index = ++counts[kind];
+            item.name_index = ++same_name[kind][item.entry.path().filename().string()];
+        }
+    }
+
+    // Directory levels between the working directory and the entry's directory: 0 for an entry
+    // directly inside it, negative when the entry lies above it.
+    long depth_of(const fs::path& path) const {
+        long depth = 0;
+        for (const fs::path& part : path.parent_path().lexically_relative(cwd_)) {
+            if (part == "..") --depth;
+            else if (part != "." && !part.empty()) ++depth;
+        }
+        return depth;
+    }
+
+    // A computed name could be anything; refuse the ones that cannot name a directory entry.
+    static bool is_valid_name(std::string_view name) {
+        return !name.empty() && name != "." && name != ".." && name.find_first_of(std::string_view("/\0", 2)) == std::string_view::npos;
+    }
+
+    std::expected<std::string, std::string> transform_name(const std::string& name, const EntryContext& ctx) const {
+        std::string result = name;
+        if (rename_rx_spec.valid) {
+            auto replaced = rename_rx_spec.apply(name, ctx);
+            if (!replaced) return replaced;
+            result = std::move(*replaced);
+        }
         if (opts.case_style == CaseStyle::None) return result;
 
         const std::size_t dot_pos = result.rfind('.');

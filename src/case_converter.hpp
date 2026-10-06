@@ -1,7 +1,6 @@
 #ifndef CASE_CONVERTER_HPP
 #define CASE_CONVERTER_HPP
 
-#include <regex>
 #include <string>
 #include <string_view>
 
@@ -117,66 +116,6 @@ static_assert(CaseConverter::to_pascal("my file-name") == "MyFileName");
 static_assert(CaseConverter::to_kebab("MyFileName") == "my-file-name");
 static_assert(CaseConverter::to_title("quarterly_REPORT") == "Quarterly Report");
 static_assert(CaseConverter::transform<CaseStyle::Snake>("someName") == "some_name");
-
-// Generic Regex Replacer with Case Conversion syntax:
-// Supports:
-// \U -> uppercase rest of replacement
-// \L -> lowercase rest of replacement
-// \E -> end case modification
-// \C -> capitalize next char
-// \N or $N -> capture group N (0-9)
-inline std::string apply_regex_replace(const std::string& filename, const std::regex& pattern, const std::string& fmt) {
-    std::sregex_iterator begin(filename.begin(), filename.end(), pattern);
-    const std::sregex_iterator end;
-    if (begin == end) return filename;
-
-    std::string result;
-    result.reserve(filename.size() + fmt.size());
-    std::size_t last_pos = 0;
-    for (auto it = begin; it != end; ++it) {
-        const std::smatch& match = *it;
-        result.append(filename, last_pos, static_cast<std::size_t>(match.position()) - last_pos);
-
-        bool in_upper = false, in_lower = false, cap_next = false;
-        auto emit = [&](char c) {
-            if (cap_next) {
-                result += ascii::to_upper(c);
-                cap_next = false;
-            } else if (in_upper) {
-                result += ascii::to_upper(c);
-            } else if (in_lower) {
-                result += ascii::to_lower(c);
-            } else {
-                result += c;
-            }
-        };
-        auto emit_group = [&](char digit) {
-            const auto grp = static_cast<std::size_t>(digit - '0');
-            if (grp < match.size())
-                for (const char gc : match[static_cast<int>(grp)].str()) emit(gc);
-        };
-
-        for (std::size_t i = 0; i < fmt.size(); ++i) {
-            const bool has_next = i + 1 < fmt.size();
-            if (fmt[i] == '\\' && has_next) {
-                const char next = fmt[i + 1];
-                if (next == 'U') { in_upper = true; in_lower = false; ++i; continue; }
-                if (next == 'L') { in_lower = true; in_upper = false; ++i; continue; }
-                if (next == 'E') { in_upper = false; in_lower = false; ++i; continue; }
-                if (next == 'C') { cap_next = true; ++i; continue; }
-                if (ascii::is_digit(next)) { emit_group(next); ++i; continue; }
-            } else if (fmt[i] == '$' && has_next && ascii::is_digit(fmt[i + 1])) {
-                emit_group(fmt[i + 1]);
-                ++i;
-                continue;
-            }
-            emit(fmt[i]);
-        }
-        last_pos = static_cast<std::size_t>(match.position() + match.length());
-    }
-    result.append(filename, last_pos, std::string::npos);
-    return result;
-}
 
 } // namespace fsturbo
 

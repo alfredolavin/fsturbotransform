@@ -9,3 +9,5 @@ Task: Optimize for C++26 and apply the Sixel terminal output rule: full-graphics
 Task: Fix .gitignore pattern semantics (git wildmatch, last-match-wins negation, rooted/dir-only/any-depth patterns, inherited exclusion, target-directory .gitignore, always skip .git)
 Task: Render the execution report as a second mini-terminal window in the same Fira Code style as the live dashboard
 Task: Add an app icon (transparent glass squircle with folder + turbo bolt, made with the nano-banana MCP, #embed-ed as RGBA) to the Sixel banner and the mini-terminal window title bars; drop the banner subtitle line
+Task: Add expression replacement mode for -r: named groups (?<name>) / (?<name=>), \\<name=>{expr} evaluated by V8 (libnode, dlopen-ed bridge libfsturbo_js.so, expressions compiled once) with all of Math in scope and index/nameIndex/nameLength/depth variables
+Task: Replace std::regex with PCRE2 (system libpcre2-8 via pkg-config): lookbehind, UTF-8, flags i/m/s/x, JIT; used for -r, --flatten-regex and the -e/-i filters; tests/regex.sh covers the engine and the expressions
