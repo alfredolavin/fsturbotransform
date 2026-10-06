@@ -3,6 +3,7 @@
 #include <print>
 #include <string>
 #include <vector>
+#include "banner.hpp"
 #include "cli_parser.hpp"
 #include "fira_code_font.hpp"
 #include "renamer.hpp"
@@ -17,12 +18,12 @@ inline void render_header() {
 
     std::println();
 
-    // Full mode: a true-color Sixel banner with the title set in the embedded Fira Code font.
+    // Full mode: a true-color Sixel banner with the app icon and the title set in the embedded Fira Code font.
     if (g_color_mode == ColorMode::Full) {
         const int cell_w = g_term.cell_width(), cell_h = g_term.cell_height();
         const int width = std::min(g_term.cols - 1, 72) * cell_w;
         const int height = 3 * cell_h;
-        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0", "C++26 · Sixel Graphics Engine · Fira Code");
+        const auto banner = sixel::render_banner(width, height, "FS-TURBO-TRANSFORMER v2.0");
         std::print("{}", place_image(sixel::encode(banner), height));
         std::println();
         return;
@@ -30,7 +31,6 @@ inline void render_header() {
 
     std::println("{}", gradient_text(" ╔════════════════════════════════════════════════════════════════════╗", palette::neon_cyan, palette::neon_purple));
     std::println("{}", gradient_text(" ║        FS-TURBO-TRANSFORMER v2.0 (C++26 Sixel Graphics Engine)     ║", palette::neon_purple, palette::neon_pink));
-    std::println("{}", gradient_text(" ║        High-Performance Monolithic Filesystem Transformer          ║", palette::neon_pink, palette::neon_cyan));
     std::println("{}", gradient_text(" ╚════════════════════════════════════════════════════════════════════╝", palette::neon_cyan, palette::neon_pink));
     std::println();
 }

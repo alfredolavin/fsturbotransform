@@ -8,3 +8,4 @@ Task: Commit and push changes to git repository
 Task: Optimize for C++26 and apply the Sixel terminal output rule: full-graphics Sixel dashboard (gradient progress bar + Fira Code mini-terminal rasterized from the #embed font), compile-time Sixel icons, terminal capability probing, adaptive frame pacing
 Task: Fix .gitignore pattern semantics (git wildmatch, last-match-wins negation, rooted/dir-only/any-depth patterns, inherited exclusion, target-directory .gitignore, always skip .git)
 Task: Render the execution report as a second mini-terminal window in the same Fira Code style as the live dashboard
+Task: Add an app icon (transparent glass squircle with folder + turbo bolt, made with the nano-banana MCP, #embed-ed as RGBA) to the Sixel banner and the mini-terminal window title bars; drop the banner subtitle line

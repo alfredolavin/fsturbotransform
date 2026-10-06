@@ -467,35 +467,6 @@ inline const UiFonts& ui_fonts() {
     return fonts;
 }
 
-// Neon gradient header banner with Fira Code title text.
-inline Canvas render_banner(int width, int height, std::string_view title, std::string_view subtitle) {
-    Canvas c(width, height);
-    const float w = static_cast<float>(width), h = static_cast<float>(height);
-    c.fill_rounded_rect(0.0f, 0.0f, w, h, h * 0.22f, palette::neon_cyan);
-    c.fill_rounded_rect(2.0f, 2.0f, w - 4.0f, h - 4.0f, h * 0.20f, [&](int x, int y) {
-        const float tx = static_cast<float>(x) / w, ty = static_cast<float>(y) / h;
-        const Rgb base = gradient(tx, Rgb{0, 150, 190}, Rgb{120, 20, 210}, Rgb{200, 0, 120});
-        return scale(base, 1.05f - 0.35f * ty);
-    });
-
-    const auto& fonts = ui_fonts();
-    ttf::GlyphCache title_gc(fonts.bold, h * 0.40f);
-    ttf::GlyphCache sub_gc(fonts.regular, h * 0.24f);
-    const int title_adv = static_cast<int>(std::lround(title_gc.advance()));
-    const int sub_adv = static_cast<int>(std::lround(sub_gc.advance()));
-    const auto title_len = static_cast<int>(ttf::utf8_length(title));
-    const auto sub_len = static_cast<int>(ttf::utf8_length(subtitle));
-    const int title_x = (width - title_adv * title_len) / 2;
-    const int sub_x = (width - sub_adv * sub_len) / 2;
-    const int title_base = static_cast<int>(h * 0.52f);
-    const int sub_base = static_cast<int>(h * 0.82f);
-
-    c.draw_text(title_gc, title_x + 2, title_base + 2, title, {10, 0, 30}, title_adv);
-    c.draw_text(title_gc, title_x, title_base, title, {255, 255, 255}, title_adv);
-    c.draw_text(sub_gc, sub_x, sub_base, subtitle, {200, 255, 250}, sub_adv);
-    return c;
-}
-
 } // namespace fsturbo::sixel
 
 #endif // SIXEL_RENDERER_HPP

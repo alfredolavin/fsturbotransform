@@ -40,6 +40,8 @@ set(SOURCES
 )
 
 set(HEADERS
+    src/app_icon.hpp
+    src/banner.hpp
     src/case_converter.hpp
     src/cli_parser.hpp
     src/color.hpp
@@ -58,9 +60,9 @@ set(HEADERS
 # Executable target
 add_executable(fsturbotransform ${SOURCES} ${HEADERS})
 
-# #embed is not tracked by every dependency scanner: rebuild when the font changes
+# #embed is not tracked by every dependency scanner: rebuild when an embedded asset changes
 set_source_files_properties(src/main.cpp PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/FiraCode-Regular.ttf")
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/FiraCode-Regular.ttf;${CMAKE_CURRENT_SOURCE_DIR}/src/app_icon.rgba")
 
 # Include directories (needed for #embed to locate embedded assets)
 target_include_directories(fsturbotransform PRIVATE

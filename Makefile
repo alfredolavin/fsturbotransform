@@ -11,7 +11,7 @@ BINDIR ?= $(PREFIX)/bin
 
 TARGET = fsturbotransform
 SRC = src/main.cpp
-DEPS = $(SRC) $(wildcard src/*.hpp) src/FiraCode-Regular.ttf
+DEPS = $(SRC) $(wildcard src/*.hpp) src/FiraCode-Regular.ttf src/app_icon.rgba
 
 all: $(TARGET)
 

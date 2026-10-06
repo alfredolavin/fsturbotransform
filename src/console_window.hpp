@@ -2,14 +2,15 @@
 #define CONSOLE_WINDOW_HPP
 
 // The mini-terminal window look shared by the live dashboard and the execution report:
-// a rounded window with a title bar and traffic lights, text set in the embedded Fira Code
-// (Sixel mode), or the matching box-drawing frame (ANSI modes).
+// a rounded window with a title bar, traffic lights and the application icon, text set in the
+// embedded Fira Code (Sixel mode), or the matching box-drawing frame (ANSI modes).
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <string>
 #include <string_view>
+#include "app_icon.hpp"
 #include "color.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_style.hpp"
@@ -61,7 +62,10 @@ inline int draw_console_window(sixel::Canvas& c, ConsoleFonts& f, float y, float
         c.fill_circle(CH * 0.7f + static_cast<float>(i) * CH * 0.6f, y + 1.0f + CH * 0.5f, CH * 0.17f, lights[i]);
     const int baseline = f.baseline_in(y, CH);
     const int title_cols = static_cast<int>(ttf::utf8_length(title));
-    c.draw_text(f.bold, (c.width() - title_cols * f.adv) / 2, baseline, title, palette::console_title, f.adv);
+    const int title_x = (c.width() - title_cols * f.adv) / 2;
+    c.draw_text(f.bold, title_x, baseline, title, palette::console_title, f.adv);
+    // The application icon sits as the window icon just left of the centered title.
+    sixel::draw_app_icon(c, title_x - f.cell_h - f.adv / 2, static_cast<int>(y) + 1, f.cell_h);
     return baseline;
 }
 
