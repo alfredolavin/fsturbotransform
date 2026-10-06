@@ -90,6 +90,9 @@ inline void print_help(const char* prog_name) {
     std::println("{}", heading("EXECUTION CONTROLS:"));
     std::println("  -d, --dry-run            Simulate operations without modifying filesystem");
     std::println("      --no-recursive       Disable recursive scanning");
+    std::println("      --no-report          Skip the final report: the mini-console then takes the whole height.");
+    std::println("                           Otherwise the report is laid out in columns and shown only when it");
+    std::println("                           is at most 20% of the console's height (about 33 rows at 100 columns)");
     std::println("      --overwrite          Allow replacing existing entries on name collisions");
     std::println("      --extract-font       Save embedded Fira Code TTF font to disk (FiraCode-Regular.ttf)");
     std::println("  -h, --help               Display this styled help menu");
@@ -166,6 +169,8 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
             auto_gitignore = false;
         } else if (arg == "-d" || arg == "--dry-run") {
             opts.dry_run = true;
+        } else if (arg == "--no-report") {
+            opts.report = false;
         } else if (arg == "--no-recursive") {
             opts.recursive = false;
         } else if (arg == "--overwrite") {

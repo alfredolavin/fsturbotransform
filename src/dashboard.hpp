@@ -5,7 +5,9 @@
 //   Full mode           -> one Sixel image per frame, text set in the embedded Fira Code
 //   Terminal/Simple mode -> ANSI text frame (TrueColor or 16-color)
 // The frame occupies a fixed block of reserved rows that is redrawn from a saved cursor
-// position (DECSC/DECRC), so the terminal never scrolls while work is in progress.
+// position (DECSC/DECRC), so the terminal never scrolls while work is in progress. The console
+// takes every row the final report (see ui::plan_screen) leaves free: the whole terminal height
+// when there is no report.
 // Optional log lines (--verbose, errors) are flushed above the frame in batches.
 
 #include <array>
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <deque>
 #include <format>
 #include <optional>
 #include <string>
@@ -21,6 +24,7 @@
 #include <vector>
 #include <unistd.h>
 #include "console_window.hpp"
+#include "report_view.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_style.hpp"
 
@@ -82,13 +86,15 @@ class LiveDashboard {
     };
 
     static constexpr std::string_view kTitle = "MINI-TERMINAL · Fira Code Engine";
-    static constexpr int kFrameRows = 6; // progress + console (title, 3 lines, bottom edge)
 
     bool configured_ = false;
     bool interactive_ = false;
     bool sixel_ = false;
     bool attached_ = false;
-    int reserved_rows_ = kFrameRows;
+    ui::ScreenPlan plan_;
+    int text_lines_ = ui::kMinConsoleLines;
+    int frame_rows_ = ui::kMinConsoleLines + 3; // progress + console (title, text lines, bottom edge)
+    int reserved_rows_ = frame_rows_;
     int width_cols_ = 80;
     std::chrono::milliseconds interval_{33};
 
@@ -97,12 +103,11 @@ class LiveDashboard {
     std::size_t current_ = 0;
     clock::time_point run_start_{}, phase_start_{}, next_draw_{};
 
-    std::array<ConsoleLine, 2> history_{}; // [1] is the newest
-    std::size_t history_count_ = 0;
+    std::deque<ConsoleLine> history_; // changes only, the newest at the back; text_lines_ - 1 of them are shown
     ConsoleLine active_;
     bool has_active_ = false;
     std::vector<std::pair<std::string, Stream>> pending_logs_;
-    std::array<LaidOutLine, 3> laid_{};
+    std::vector<LaidOutLine> laid_; // one per text line: history above, the active line last
 
     using SignalHandler = void (*)(int);
     SignalHandler prev_int_ = SIG_DFL, prev_term_ = SIG_DFL;
@@ -113,16 +118,20 @@ class LiveDashboard {
         float bar_x = 0, bar_y = 0, bar_w = 0, bar_h = 0;
         int row0_baseline = 0, progress_text_x = 0, progress_cols = 0;
         int win_y = 0, title_baseline = 0, text_x = 0, text_cols = 0;
-        std::array<int, 3> line_baseline{};
+        std::vector<int> line_baseline;
     } geo_;
     std::optional<ui::ConsoleFonts> fonts_;
     sixel::Canvas base_, frame_;
 
     void configure() {
         configured_ = true;
-        interactive_ = term::interactive() && g_term.cols >= 40 && g_term.rows >= kFrameRows + 4;
+        interactive_ = ui::dashboard_fits();
         if (!interactive_) return;
         sixel_ = g_color_mode == ColorMode::Full;
+        text_lines_ = std::max(ui::kMinConsoleLines, plan_.console_lines);
+        frame_rows_ = text_lines_ + 3;
+        reserved_rows_ = frame_rows_;
+        laid_.resize(static_cast<std::size_t>(text_lines_));
         width_cols_ = ui::window_columns();
         interval_ = std::chrono::milliseconds(sixel_ ? 50 : 33);
         if (sixel_) build_sixel_chrome();
@@ -165,9 +174,12 @@ class LiveDashboard {
                 slot.cols = active ? 2 : 0;
             }
         };
-        lay(laid_[0], history_count_ >= 2 ? &history_[0] : nullptr, false);
-        lay(laid_[1], history_count_ >= 1 ? &history_[1] : nullptr, false);
-        lay(laid_[2], has_active_ ? &active_ : nullptr, true);
+        const std::size_t last = laid_.size() - 1;
+        for (std::size_t slot = 0; slot < last; ++slot) {
+            const std::size_t age = last - 1 - slot; // 0 = the entry right above the active line
+            lay(laid_[slot], age < history_.size() ? &history_[history_.size() - 1 - age] : nullptr, false);
+        }
+        lay(laid_[last], has_active_ ? &active_ : nullptr, true);
     }
 
     float ratio() const { return total_ > 0 ? std::min(1.0f, static_cast<float>(current_) / static_cast<float>(total_)) : 1.0f; }
@@ -233,7 +245,7 @@ class LiveDashboard {
         out += ui::ansi_window_top(W, kTitle, stats_text(now), palette::note);
         out += "\n";
 
-        // Rows 2-4: console history + active line
+        // Rows 2..: console history + active line
         const std::size_t inner = static_cast<std::size_t>(W - 4);
         layout_console(inner - 1);
         const bool cursor_on = (ms / 530) % 2 == 0;
@@ -247,7 +259,7 @@ class LiveDashboard {
                 content += reset_s;
             }
             std::size_t used = l.cols;
-            if (li == 2 && used < inner) {
+            if (li + 1 == laid_.size() && used < inner) {
                 content += rgb_fg(palette::neon_cyan);
                 content += cursor_on ? "▌" : " ";
                 content += reset_s;
@@ -258,7 +270,7 @@ class LiveDashboard {
             out += "\n";
         }
 
-        // Row 5: bottom edge (no trailing newline: the frame must not scroll)
+        // Last row: bottom edge (no trailing newline: the frame must not scroll)
         out += "\x1b[2K";
         out += ui::ansi_window_bottom(W);
         return out;
@@ -275,8 +287,8 @@ class LiveDashboard {
         g.cell_h = ch;
         g.adv = f.adv;
         g.w = width_cols_ * cw;
-        g.h = kFrameRows * ch;
-        reserved_rows_ = kFrameRows + 1; // spare row absorbs any post-image cursor advance
+        g.h = frame_rows_ * ch;
+        reserved_rows_ = frame_rows_ + 1; // spare row absorbs any post-image cursor advance
 
         auto baseline_in = [&](float top, float height) { return f.baseline_in(top, height); };
         const float W = static_cast<float>(g.w), CH = static_cast<float>(ch);
@@ -293,7 +305,8 @@ class LiveDashboard {
         g.text_x = g.adv;
         g.text_cols = std::max(10, (g.w - 2 * g.adv) / g.adv);
         const float lines_top = static_cast<float>(g.win_y) + CH * 1.2f;
-        for (int i = 0; i < 3; ++i) g.line_baseline[static_cast<std::size_t>(i)] = baseline_in(lines_top + static_cast<float>(i) * CH, CH);
+        g.line_baseline.resize(static_cast<std::size_t>(text_lines_));
+        for (int i = 0; i < text_lines_; ++i) g.line_baseline[static_cast<std::size_t>(i)] = baseline_in(lines_top + static_cast<float>(i) * CH, CH);
 
         base_ = ui::window_canvas(g.w, g.h);
         sixel::Canvas& c = base_;
@@ -350,8 +363,8 @@ class LiveDashboard {
         for (std::size_t i = 0; i < laid_.size(); ++i) draw_spans(laid_[i].spans, g.text_x, g.line_baseline[i]);
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - run_start_).count();
         if ((ms / 530) % 2 == 0) {
-            const int cx = g.text_x + static_cast<int>(laid_[2].cols) * g.adv;
-            frame_.draw_text(fonts_->regular, cx, g.line_baseline[2], "▌", palette::neon_cyan, g.adv);
+            const int cx = g.text_x + static_cast<int>(laid_.back().cols) * g.adv;
+            frame_.draw_text(fonts_->regular, cx, g.line_baseline.back(), "▌", palette::neon_cyan, g.adv);
         }
         return sixel::encode(frame_);
     }
@@ -408,6 +421,9 @@ public:
 
     bool interactive() const { return interactive_; }
 
+    // How the screen is shared with the final report; call before the first phase starts.
+    void set_plan(const ui::ScreenPlan& plan) { plan_ = plan; }
+
     // Starts (or restarts) a phase; the console area and its history are reused in place.
     void begin_phase(std::string_view phase, std::size_t total) {
         if (!configured_) {
@@ -424,9 +440,9 @@ public:
     void step(std::size_t current, std::string_view action, std::string_view source, std::string_view dest, bool changed) {
         if (!interactive_) return;
         if (has_active_ && active_.changed) {
-            std::swap(history_[0], history_[1]);
-            std::swap(history_[1], active_);
-            history_count_ = std::min<std::size_t>(history_count_ + 1, 2);
+            history_.push_back(std::move(active_));
+            if (history_.size() + 1 > static_cast<std::size_t>(text_lines_)) history_.pop_front();
+            active_ = {};
         }
         active_.action.assign(action);
         active_.source.assign(source);
@@ -454,7 +470,7 @@ public:
         if (!attached_) return;
         draw(clock::now()); // final frame (and any pending log lines)
         std::string out = std::format("\x1b" "8\x1b[{}B\r", reserved_rows_ - 1);
-        if (reserved_rows_ == kFrameRows) out += '\n';
+        if (reserved_rows_ == frame_rows_) out += '\n';
         out += "\x1b[?25h";
         std::fwrite(out.data(), 1, out.size(), stdout);
         std::fflush(stdout);

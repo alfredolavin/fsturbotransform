@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "case_converter.hpp"
 #include "dashboard.hpp"
+#include "execution_stats.hpp"
 #include "matcher.hpp"
 #include "terminal_style.hpp"
 #include "ttf_font.hpp"
@@ -36,18 +37,8 @@ struct RenameOptions {
     bool recursive = true;
     bool overwrite = false;
     bool verbose = false; // Only print scrolling text if explicitly requested
+    bool report = true;   // the final execution report (--no-report gives the console the whole height)
     FilterMatcher filter;
-};
-
-struct ExecutionStats {
-    std::size_t scanned_dirs = 0;
-    std::size_t scanned_files = 0;
-    std::size_t renamed_dirs = 0;
-    std::size_t renamed_files = 0;
-    std::size_t flattened_files = 0;
-    std::size_t excluded_items = 0;
-    std::size_t errors = 0;
-    double duration_ms = 0.0;
 };
 
 class TransformerEngine {
@@ -57,6 +48,7 @@ class TransformerEngine {
     RegexSpec flatten_rx_spec;
     std::string config_error_; // an invalid --regex / --flatten-regex: reported by run() before anything is touched
     fs::path cwd_;             // where the program was started: the origin of the `depth` variable
+    ui::ScreenPlan plan_;      // how the screen is shared between the live console and the final report
     term::LiveDashboard dashboard;
 
     void report_error(std::string_view message) {
@@ -105,6 +97,8 @@ public:
     explicit TransformerEngine(RenameOptions options) : opts(std::move(options)) {
         std::error_code ec;
         cwd_ = fs::current_path(ec);
+        plan_ = ui::plan_screen(opts.report);
+        dashboard.set_plan(plan_);
         if (!opts.regex_rename.empty()) {
             rename_rx_spec = RegexSpec::parse(opts.regex_rename);
             if (!rename_rx_spec.valid) config_error_ = std::format("Invalid --regex '{}': {}", opts.regex_rename, rename_rx_spec.error);
@@ -114,6 +108,8 @@ public:
             if (!flatten_rx_spec.valid) config_error_ = std::format("Invalid --flatten-regex '{}': {}", opts.flatten_regex, flatten_rx_spec.error);
         }
     }
+
+    const ui::ScreenPlan& screen_plan() const { return plan_; }
 
     ExecutionStats run() {
         const auto start_time = std::chrono::steady_clock::now();

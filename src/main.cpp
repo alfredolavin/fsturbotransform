@@ -35,30 +35,13 @@ inline void render_header() {
     std::println();
 }
 
-inline void render_footer(const ExecutionStats& stats, bool dry_run) {
-    using sixel::Icon;
-
-    std::vector<ui::ReportRow> rows{
-        {Icon::Folder, "Scanned Directories", std::format("{}", stats.scanned_dirs), {230, 230, 240}},
-        {Icon::File, "Scanned Files", std::format("{}", stats.scanned_files), {230, 230, 240}},
-        {Icon::Rename, "Renamed Files", std::format("{}", stats.renamed_files), {100, 255, 100}},
-        {Icon::Rename, "Renamed Directories", std::format("{}", stats.renamed_dirs), {100, 220, 255}},
-        {Icon::Flatten, "Flattened Files", std::format("{}", stats.flattened_files), {255, 200, 50}},
-        {Icon::Exclude, "Excluded Items", std::format("{}", stats.excluded_items), {180, 180, 180}},
-    };
-    if (stats.errors > 0) [[unlikely]] {
-        rows.push_back({Icon::Error, "Errors Encountered", std::format("{}", stats.errors), {255, 50, 50}});
-    }
-    rows.push_back({Icon::Success, "Execution Time", std::format("{:.2f} ms", stats.duration_ms), {0, 255, 200}});
-    rows.push_back({Icon::Font, "Embedded Font", std::format("{} v{} ({} bytes)", FIRA_CODE_FONT_NAME, FIRA_CODE_VERSION, fira_code_ttf_len), {255, 150, 255}});
-
-    std::string status = dry_run ? "DRY RUN · NO FILES MODIFIED" : "COMPLETED";
-    if (stats.errors > 0) status = std::format("{}{} ERROR{}", dry_run ? "DRY RUN · " : "", stats.errors, stats.errors == 1 ? "" : "S");
-    const Rgb status_color = stats.errors > 0 ? palette::error : dry_run ? palette::action : palette::dest;
-
-    std::println();
-    ui::print_report(rows, {std::move(status), status_color});
-    std::println();
+// The execution report. In the live layout the console and the report already share the
+// terminal's height exactly, so no blank lines are added around it.
+inline void render_footer(const ExecutionStats& stats, bool dry_run, const ui::ScreenPlan& plan) {
+    if (!plan.show_report) return;
+    if (!plan.live) std::println();
+    ui::print_report(ui::make_report_rows(stats), ui::make_report_status(stats, dry_run));
+    if (!plan.live) std::println();
 }
 
 int main(int argc, char* argv[]) {
@@ -78,7 +61,7 @@ int main(int argc, char* argv[]) {
     const ExecutionStats stats = engine.run();
 
     if (term::g_color_mode != term::ColorMode::None) {
-        render_footer(stats, dry_run);
+        render_footer(stats, dry_run, engine.screen_plan());
     }
 
     return (stats.errors > 0) ? 1 : 0;

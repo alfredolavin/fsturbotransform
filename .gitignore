@@ -6,3 +6,4 @@ fsturbotransform
 *.a
 .cache/
 compile_commands.json
+__pycache__/

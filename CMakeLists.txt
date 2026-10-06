@@ -47,6 +47,7 @@ set(HEADERS
     src/color.hpp
     src/console_window.hpp
     src/dashboard.hpp
+    src/execution_stats.hpp
     src/fira_code_font.hpp
     src/js_bridge_api.h
     src/js_engine.hpp
