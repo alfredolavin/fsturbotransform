@@ -10,6 +10,7 @@
 #include "renamer.hpp"
 #include "report_view.hpp"
 #include "sixel_renderer.hpp"
+#include "terminal_sink.hpp"
 #include "terminal_style.hpp"
 
 using namespace fsturbo;
@@ -61,11 +62,13 @@ int main(int argc, char* argv[]) {
     }
 
     const bool dry_run = opts.dry_run;
+    const ui::ScreenPlan plan = ui::plan_screen(opts.report);
+    TerminalSink sink(plan, opts.verbose);
     TransformerEngine engine(std::move(opts));
-    const ExecutionStats stats = engine.run();
+    const ExecutionStats stats = engine.run(sink);
 
     if (term::g_color_mode != term::ColorMode::None) {
-        render_footer(stats, dry_run, engine.screen_plan());
+        render_footer(stats, dry_run, plan);
     }
 
     return (stats.errors > 0) ? 1 : 0;

@@ -55,11 +55,14 @@ set(HEADERS
     src/matcher.hpp
     src/named_groups.hpp
     src/pcre2_regex.hpp
+    src/progress_sink.hpp
+    src/regex_tokens.hpp
     src/renamer.hpp
     src/replace_template.hpp
     src/report_view.hpp
     src/sixel_renderer.hpp
     src/terminal_probe.hpp
+    src/terminal_sink.hpp
     src/terminal_style.hpp
     src/ttf_font.hpp
 )
@@ -130,6 +133,24 @@ endif()
 install(TARGETS fsturbotransform
     RUNTIME DESTINATION bin
 )
+
+# Unit tests of the GUI's syntax highlighting tokenizer (pure C++, no Qt)
+enable_testing()
+add_executable(regex_tokens_test tests/regex_tokens_test.cpp)
+target_include_directories(regex_tokens_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(regex_tokens_test PRIVATE PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
+add_test(NAME regex_tokens COMMAND regex_tokens_test)
+
+# The QML GUI (fsturbotransform-gui): built when Qt 6 Quick is installed.
+option(FSTURBO_GUI "Build fsturbotransform-gui, the QML front end (needs Qt 6 Quick, Kirigami at run time)" ON)
+if(FSTURBO_GUI)
+    find_package(Qt6 6.8 COMPONENTS Quick QuickControls2 Widgets Svg)
+    if(Qt6_FOUND)
+        add_subdirectory(gui)
+    else()
+        message(WARNING "Qt 6 Quick not found (qt6-declarative-dev, qt6-svg-dev): building without fsturbotransform-gui")
+    endif()
+endif()
 
 # Custom helper target for explicit local installation
 add_custom_target(install_local

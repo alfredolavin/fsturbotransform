@@ -14,12 +14,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <unistd.h>
 #include "case_converter.hpp"
-#include "dashboard.hpp"
 #include "execution_stats.hpp"
 #include "matcher.hpp"
-#include "terminal_style.hpp"
+#include "progress_sink.hpp"
 #include "ttf_font.hpp"
 
 namespace fs = std::filesystem;
@@ -39,7 +37,25 @@ struct RenameOptions {
     bool verbose = false; // Only print scrolling text if explicitly requested
     bool report = true;   // the final execution report (--no-report gives the console the whole height)
     FilterMatcher filter;
+    fs::path depth_origin; // where `depth` counts from; empty: the working directory (the GUI uses the target)
 };
+
+// Adds the .gitignore-style `files` to the filter, then (unless `target_own` is false) the target
+// directory's own .gitignore, which, as in git, takes precedence. All patterns are matched relative
+// to the target directory. Returns the files that could not be read.
+inline std::vector<fs::path> load_gitignores(RenameOptions& opts, const std::vector<fs::path>& files, bool target_own) {
+    std::vector<fs::path> unreadable;
+    for (const fs::path& file : files) {
+        if (!opts.filter.load_gitignore(file.string())) unreadable.push_back(file);
+    }
+    if (target_own) {
+        const fs::path own = opts.target_dir / ".gitignore";
+        std::error_code ec;
+        const bool listed = std::ranges::any_of(files, [&](const fs::path& f) { return fs::equivalent(f, own, ec); });
+        if (!listed && fs::is_regular_file(own, ec)) opts.filter.load_gitignore(own.string());
+    }
+    return unreadable;
+}
 
 class TransformerEngine {
     RenameOptions opts;
@@ -48,15 +64,11 @@ class TransformerEngine {
     RegexSpec flatten_rx_spec;
     std::string config_error_; // an invalid --regex / --flatten-regex: reported by run() before anything is touched
     fs::path cwd_;             // where the program was started: the origin of the `depth` variable
-    ui::ScreenPlan plan_;      // how the screen is shared between the live console and the final report
-    term::LiveDashboard dashboard;
+    ProgressSink* sink_ = nullptr;
 
     void report_error(std::string_view message) {
         stats.errors++;
-        static const bool err_tty = isatty(STDERR_FILENO) != 0;
-        std::string line = err_tty ? term::icon_line(sixel::Icon::Error, std::format("{}{}{}", term::rgb_fg(palette::error), message, term::reset()))
-                                   : std::format("[ERROR] {}\n", message);
-        dashboard.log(std::move(line), term::Stream::Err);
+        sink_->error(message);
     }
 
     // Visits every entry with its root-relative path and exclusion verdict. Excluded
@@ -96,9 +108,7 @@ class TransformerEngine {
 public:
     explicit TransformerEngine(RenameOptions options) : opts(std::move(options)) {
         std::error_code ec;
-        cwd_ = fs::current_path(ec);
-        plan_ = ui::plan_screen(opts.report);
-        dashboard.set_plan(plan_);
+        cwd_ = opts.depth_origin.empty() ? fs::current_path(ec) : fs::weakly_canonical(opts.depth_origin, ec);
         if (!opts.regex_rename.empty()) {
             rename_rx_spec = RegexSpec::parse(opts.regex_rename);
             if (!rename_rx_spec.valid) config_error_ = std::format("Invalid --regex '{}': {}", opts.regex_rename, rename_rx_spec.error);
@@ -109,30 +119,37 @@ public:
         }
     }
 
-    const ui::ScreenPlan& screen_plan() const { return plan_; }
+    // The first configuration error (an invalid --regex / --flatten-regex), or empty.
+    const std::string& config_error() const { return config_error_; }
 
-    ExecutionStats run() {
+    // Runs once; everything that happens is reported to `sink`.
+    ExecutionStats run(ProgressSink& sink) {
         const auto start_time = std::chrono::steady_clock::now();
+        sink_ = &sink;
+        stats = {};
 
         if (!config_error_.empty()) [[unlikely]] {
             report_error(config_error_);
+            sink.finish();
             return stats;
         }
 
         std::error_code ec;
         if (!fs::is_directory(opts.target_dir, ec)) [[unlikely]] {
             report_error(std::format("Target directory does not exist: {}", opts.target_dir.string()));
+            sink.finish();
             return stats;
         }
         const fs::path root = fs::canonical(opts.target_dir, ec);
         if (ec) [[unlikely]] {
             report_error(std::format("Cannot resolve {}: {}", opts.target_dir.string(), ec.message()));
+            sink.finish();
             return stats;
         }
 
         if (opts.flatten || !opts.flatten_regex.empty()) execute_flattening(root);
-        execute_renaming(root);
-        dashboard.finish();
+        if (!sink.cancelled()) execute_renaming(root);
+        sink.finish();
 
         stats.duration_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_time).count();
         return stats;
@@ -157,9 +174,9 @@ private:
         for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) claimed.insert(it->path().filename().string());
 
         const std::size_t total = files_to_flatten.size();
-        dashboard.begin_phase("FLATTEN", total);
+        sink_->begin_phase("FLATTEN", total);
 
-        for (std::size_t i = 0; i < total; ++i) {
+        for (std::size_t i = 0; i < total && !sink_->cancelled(); ++i) {
             const fs::path& src_file = files_to_flatten[i];
             const fs::path filename = src_file.filename();
             std::string dest_name = filename.string();
@@ -175,12 +192,7 @@ private:
             claimed.insert(dest_name);
 
             const std::string src_rel = src_file.lexically_relative(root).string();
-            dashboard.step(i + 1, "FLATTEN", src_rel, dest_name, true);
-
-            if (opts.verbose) {
-                dashboard.log(term::icon_line(sixel::Icon::Flatten, std::format("{}[FLATTEN]{} {} → {}", term::rgb_fg({255, 200, 50}),
-                                                                                term::reset(), src_rel, dest_name)));
-            }
+            sink_->step(i + 1, "FLATTEN", src_rel, dest_name, true);
 
             if (opts.dry_run) {
                 stats.flattened_files++;
@@ -230,9 +242,9 @@ private:
         std::ranges::sort(items, std::greater{}, &Item::sort_key);
 
         const std::size_t total = items.size();
-        dashboard.begin_phase("RENAME", total);
+        sink_->begin_phase("RENAME", total);
 
-        for (std::size_t i = 0; i < total; ++i) {
+        for (std::size_t i = 0; i < total && !sink_->cancelled(); ++i) {
             const Item& item = items[i];
             const fs::path& path = item.entry.path();
             const std::string filename = path.filename().string();
@@ -240,30 +252,24 @@ private:
             const EntryContext ctx{item.index, item.name_index, ttf::utf8_length(filename), depth_of(path)};
             const auto renamed = transform_name(filename, ctx);
             if (!renamed) {
-                dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                sink_->step(i + 1, "CHECK", rel_str, {}, false);
                 report_error(std::format("Skipped {}: {}", rel_str, renamed.error()));
                 continue;
             }
             const std::string& new_filename = *renamed;
 
             if (filename == new_filename) {
-                dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                sink_->step(i + 1, "CHECK", rel_str, {}, false);
                 continue;
             }
             if (!is_valid_name(new_filename)) {
-                dashboard.step(i + 1, "CHECK", rel_str, {}, false);
+                sink_->step(i + 1, "CHECK", rel_str, {}, false);
                 report_error(std::format("Skipped {}: '{}' is not a valid file name", rel_str, new_filename));
                 continue;
             }
 
             const std::string_view action_tag = item.is_dir ? "DIR RENAME" : "FILE RENAME";
-            dashboard.step(i + 1, action_tag, rel_str, new_filename, true);
-
-            if (opts.verbose) {
-                dashboard.log(term::icon_line(sixel::Icon::Rename, std::format("{}{}{} {} → {}{}{}", term::rgb_fg({100, 220, 255}), action_tag,
-                                                                               term::reset(), rel_str, term::rgb_fg({100, 255, 150}),
-                                                                               new_filename, term::reset())));
-            }
+            sink_->step(i + 1, action_tag, rel_str, new_filename, true);
 
             const fs::path target_path = path.parent_path() / new_filename;
             std::error_code ec;
@@ -314,11 +320,14 @@ private:
         return depth;
     }
 
+public:
     // A computed name could be anything; refuse the ones that cannot name a directory entry.
     static bool is_valid_name(std::string_view name) {
         return !name.empty() && name != "." && name != ".." && name.find_first_of(std::string_view("/\0", 2)) == std::string_view::npos;
     }
 
+    // The new name of one entry (unchanged if nothing applies); the GUI also uses it to try the
+    // options on a sample name.
     std::expected<std::string, std::string> transform_name(const std::string& name, const EntryContext& ctx) const {
         std::string result = name;
         if (rename_rx_spec.valid) {

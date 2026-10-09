@@ -57,6 +57,11 @@ cmake-build:
 	cmake -B build -DCMAKE_BUILD_TYPE=Release
 	cmake --build build
 
+# The QML GUI needs Qt's build tools (moc, qmlcachegen): it is built through CMake.
+gui:
+	cmake -B build -DCMAKE_BUILD_TYPE=Release
+	cmake --build build --target fsturbotransform-gui
+
 cmake-install: cmake-build
 	cmake --install build
 
@@ -64,4 +69,4 @@ clean:
 	rm -f $(TARGET) $(JS_BRIDGE) FiraCode-Regular.ttf
 	rm -rf build
 
-.PHONY: all install uninstall clean cmake-build cmake-install
+.PHONY: all install uninstall clean cmake-build cmake-install gui

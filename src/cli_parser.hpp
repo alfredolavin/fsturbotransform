@@ -191,18 +191,8 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
 
     term::init_terminal(color_mode, graphics);
 
-    // Explicit files first, then the target directory's own .gitignore, which (as in git)
-    // takes precedence. All patterns are matched relative to the target directory.
-    for (const fs::path& file : gitignore_files) {
-        if (!opts.filter.load_gitignore(file.string()))
-            std::println(stderr, "warning: cannot read gitignore file {}", file.string());
-    }
-    if (auto_gitignore) {
-        const fs::path own = opts.target_dir / ".gitignore";
-        std::error_code ec;
-        const bool listed = std::ranges::any_of(gitignore_files, [&](const fs::path& f) { return fs::equivalent(f, own, ec); });
-        if (!listed && fs::is_regular_file(own, ec)) opts.filter.load_gitignore(own.string());
-    }
+    for (const fs::path& file : load_gitignores(opts, gitignore_files, auto_gitignore))
+        std::println(stderr, "warning: cannot read gitignore file {}", file.string());
 
     if (want_help || want_font) {
         if (want_help) print_help(argv[0]);

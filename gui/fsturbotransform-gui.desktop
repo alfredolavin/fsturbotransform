@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FS-Turbo-Transformer
+GenericName=Batch Renamer
+Comment=Rename, re-case and flatten directory trees with regular expressions
+Exec=fsturbotransform-gui %f
+Icon=fsturbotransform
+Terminal=false
+Categories=Qt;KDE;Utility;FileTools;
+Keywords=rename;batch;regex;case;flatten;files;
+MimeType=inode/directory;
