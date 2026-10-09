@@ -41,6 +41,36 @@ with() {
 # expect <description> <regex> <expected lines>: with -r <regex>
 expect() { with "$1" "$3" -r "$2"; }
 
+# counters: the report's counters as sorted "Label=N" lines (--color=simple prints the report when
+# the output is not a terminal)
+counters() {
+    sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -oE '(Scanned|Renamed|Flattened|Excluded|Errors)[A-Za-z ]* ·+ [0-9]+' | sed -E 's/ ·+ /=/' | sort
+}
+
+# for_real <options...>: runs without --dry-run on a copy of the fixture
+for_real() {
+    rm -rf "$work/real" && cp -a "$work/tree" "$work/real"
+    (cd "$work/real/$CWD" && "$BIN" --no-gitignore "$@" . 2>&1)
+    rm -rf "$work/real"
+}
+
+# excluded <description> <expected count> <options...>: the report's "Excluded Items" (dry run)
+excluded() {
+    local desc=$1 want=$2 got
+    shift 2
+    got=$(cli --color=simple "$@" | counters | sed -n 's/^Excluded Items=//p')
+    if [[ $got == "$want" ]]; then pass=$((pass + 1)); else report "$desc" "$*" "Excluded Items $want" "Excluded Items $got"; fi
+}
+
+# like_real <description> <options...>: the dry run predicts the real run (same actions, same counters)
+like_real() {
+    local desc=$1 dry real
+    shift
+    dry=$( (cli "$@" | actions; cli --color=simple "$@" | counters) | sort)
+    real=$( (for_real --color=none --verbose "$@" | actions; for_real --color=simple "$@" | counters) | sort)
+    if [[ $dry == "$real" ]]; then pass=$((pass + 1)); else report "$desc" "$*" "$real" "$dry"; fi
+}
+
 # fails <description> <regex> <fragment of the error message>: must exit 1 with that message
 fails() {
     local out rc
@@ -100,6 +130,45 @@ if [[ $got == 2 ]]; then pass=$((pass + 1)); else report "dry run does not scan 
 want=$(cli "${flat[@]}" | actions | sort)
 got=$(cd "$work/tree" && "$BIN" --color=none --verbose --no-gitignore "${flat[@]}" . 2>&1 | actions | sort)
 if [[ $got == "$want" ]]; then pass=$((pass + 1)); else report "the real run does what the dry run showed" "${flat[*]}" "$want" "$got"; fi
+
+tree a/X.TXT b.log "Holiday Photos/IMG 2024-07-15.JPG" a/deep/Y.TXT keep/k.log keep/notes.TXT cache/ z.txt
+with "renames of flattened files are reported at the root; emptied directories are not renamed" \
+    "flatten a/X.TXT → X.TXT
+flatten a/deep/Y.TXT → Y.TXT
+flatten Holiday Photos/IMG 2024-07-15.JPG → IMG 2024-07-15.JPG
+flatten keep/k.log → k.log
+flatten keep/notes.TXT → notes.TXT
+X.TXT → x.txt
+Y.TXT → y.txt
+IMG 2024-07-15.JPG → img 2024-07-15.jpg
+notes.TXT → notes.txt" -f -l -e '*.log'
+with "--flatten-regex: only the matching files move; the rest is renamed where it is" \
+    "flatten Holiday Photos/IMG 2024-07-15.JPG → IMG 2024-07-15.JPG
+IMG 2024-07-15.JPG → img 2024-07-15.jpg
+a/X.TXT → x.txt
+a/deep/Y.TXT → y.txt
+keep/notes.TXT → notes.txt" -r '/^(?<b>[^.]+)\.(?<e>\w+)$/\L\<b>.\<e>/' --flatten-regex '/\.JPG$/'
+with "a flattened file is judged again at the root: an exclusion of the root's X.TXT now applies" \
+    "flatten a/X.TXT → X.TXT
+flatten a/deep/Y.TXT → Y.TXT
+flatten Holiday Photos/IMG 2024-07-15.JPG → IMG 2024-07-15.JPG
+flatten keep/k.log → k.log
+flatten keep/notes.TXT → notes.TXT
+Y.TXT → y.txt
+IMG 2024-07-15.JPG → img 2024-07-15.jpg
+notes.TXT → notes.txt" -f -l -e X.TXT -e b.log
+tree a/X.TXT b.log c/d.log c/sub/e.log cache/old.TXT f.txt
+excluded "-f: an excluded entry is counted once, not once per phase" 3 -f -e '**/*.log'
+excluded "--flatten-regex: an excluded entry is counted once" 4 --flatten-regex '/X/' -e '**/*.log' -e cache
+excluded "an excluded directory and what -i walks inside it are counted once" 3 -f -e c -i 'c/*.log'
+excluded "a flattened file excluded at the root counts as one more" 2 -f -e X.TXT -e b.log
+excluded "without flattening nothing changes" 4 -l -e '**/*.log' -e cache
+tree a/X.TXT a/x.txt b/X.TXT x.txt "Holiday Photos/IMG.JPG" "Holiday Photos/sub/Deep.JPG" empty/ "Mixed Case/"
+like_real "-f -l: same renames, collisions and counters as the real run" -f -l
+like_real "-f -l -e: exclusions, emptied and empty directories" -f -l -e '*.txt' -e empty
+like_real "--flatten-regex with renames of what stays" --flatten-regex '/\.JPG$/' -u
+like_real "-f --overwrite" -f -l --overwrite
+like_real "-f -e dir -i: files re-admitted from an excluded directory" -f -l -e 'Holiday Photos' -i 'Holiday Photos/**/*.JPG'
 
 # --- JavaScript expressions (need the V8 bridge) -------------------------------------------
 

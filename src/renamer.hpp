@@ -64,10 +64,27 @@ class TransformerEngine {
     RegexSpec flatten_rx_spec;
     std::string config_error_; // an invalid --regex / --flatten-regex: reported by run() before anything is touched
     fs::path cwd_;             // where the program was started: the origin of the `depth` variable
-    // A dry run moves nothing, so the rename phase is shown the tree the flatten phase would
-    // leave: where each flattened file would land, and the directories it would empty and remove.
-    std::unordered_map<std::string, fs::path> dry_flattened_;
-    std::unordered_set<std::string> dry_removed_dirs_;
+    // A dry run moves nothing, so it keeps its own view of what the run would have changed: the
+    // rename phase is shown the tree the flatten phase would leave (where each flattened file
+    // would land, the directories it would empty and remove), and its collision checks see the
+    // files flattened or renamed before. Empty in a real run, where the disk itself is the truth.
+    struct DryRunView {
+        std::unordered_map<std::string, fs::path> flattened; // a flattened file → where it lands
+        std::unordered_set<std::string> gone;                // paths moved away, removed or replaced (--overwrite)
+        std::unordered_set<std::string> created;             // paths moved to
+
+        void move(const fs::path& from, const fs::path& to) {
+            created.erase(from.native());
+            gone.insert(from.native());
+            gone.erase(to.native());
+            created.insert(to.native());
+        }
+        bool exists(const fs::path& path, std::error_code& ec) const {
+            if (created.contains(path.native())) return true;
+            if (gone.contains(path.native())) return false;
+            return fs::exists(path, ec);
+        }
+    } dry_;
     ProgressSink* sink_ = nullptr;
 
     void report_error(std::string_view message) {
@@ -130,6 +147,7 @@ public:
         const auto start_time = std::chrono::steady_clock::now();
         sink_ = &sink;
         stats = {};
+        dry_ = {};
 
         if (!config_error_.empty()) [[unlikely]] {
             report_error(config_error_);
@@ -175,6 +193,7 @@ private:
         std::unordered_set<std::string> claimed;
         std::error_code ec;
         for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) claimed.insert(it->path().filename().string());
+        std::unordered_map<std::string, std::string> landed; // dry run: root name → the file flattened to it last
 
         const std::size_t total = files_to_flatten.size();
         sink_->begin_phase("FLATTEN", total);
@@ -199,7 +218,13 @@ private:
 
             if (opts.dry_run) {
                 stats.flattened_files++;
-                dry_flattened_.emplace(src_file.native(), root / dest_name);
+                // With --overwrite a later file replaces an earlier one flattened to the same name.
+                if (auto [it, fresh] = landed.try_emplace(dest_name, src_file.native()); !fresh) {
+                    dry_.flattened.erase(it->second);
+                    it->second = src_file.native();
+                }
+                dry_.move(src_file, root / dest_name);
+                dry_.flattened.emplace(src_file.native(), root / dest_name);
                 continue;
             }
             std::error_code rename_ec;
@@ -240,9 +265,9 @@ private:
             bool empty = true;
             for (fs::directory_iterator it(dir, ec), end; empty && !ec && it != end; it.increment(ec)) {
                 const std::string& p = it->path().native();
-                empty = dry_flattened_.contains(p) || dry_removed_dirs_.contains(p);
+                empty = dry_.gone.contains(p);
             }
-            if (empty && !ec) dry_removed_dirs_.insert(dir.native());
+            if (empty && !ec) dry_.gone.insert(dir.native());
         }
     }
 
@@ -259,10 +284,11 @@ private:
         walk(root, opts.recursive, [&](const fs::directory_entry& entry, std::string_view, bool is_dir, bool excluded) {
             fs::path path = entry.path();
             if (opts.dry_run) { // see the tree as the flatten phase would have left it
-                if (dry_removed_dirs_.contains(path.native())) return;
-                if (const auto moved = dry_flattened_.find(path.native()); moved != dry_flattened_.end()) {
+                if (const auto moved = dry_.flattened.find(path.native()); moved != dry_.flattened.end()) {
                     path = moved->second;
                     excluded = opts.filter.is_excluded(path.filename().string(), false);
+                } else if (dry_.gone.contains(path.native()) || dry_.created.contains(path.native())) {
+                    return; // removed, or replaced (--overwrite) by a flattened file
                 }
             }
             if (is_dir) stats.scanned_dirs++;
@@ -309,11 +335,13 @@ private:
             std::error_code ec;
             // Refuse to clobber a different existing entry (case-only renames on
             // case-insensitive filesystems resolve to the same file and are allowed).
-            if (!opts.overwrite && fs::exists(target_path, ec) && !fs::equivalent(path, target_path, ec)) {
+            if (!opts.overwrite && dry_.exists(target_path, ec) && !fs::equivalent(path, target_path, ec)) {
                 report_error(std::format("Skipped {}: {} already exists (use --overwrite)", rel_str, new_filename));
                 continue;
             }
-            if (!opts.dry_run) {
+            if (opts.dry_run) {
+                dry_.move(path, target_path);
+            } else {
                 fs::rename(path, target_path, ec);
                 if (ec) {
                     report_error(std::format("Failed to rename {}: {}", path.string(), ec.message()));
