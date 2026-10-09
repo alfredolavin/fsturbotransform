@@ -82,6 +82,25 @@ fails "an unbounded lookbehind is refused with PCRE2's own message" '/(?<=a+)b/x
 fails "invalid regex shows the offset" '/a(?/x/' "missing closing parenthesis"
 fails "duplicate group name" '/(?<a>x)(?<a>y)/z/' "same name"
 
+# --- Flattening: a dry run shows what the real run does -----------------------------------
+
+tree "A/X.TXT" "A/B/Y.TXT" "A/c.log" "b.log" "Keep/Z.TXT"
+flat=(-f -l -e '**/*.log' -e Keep)
+with "dry run: flattened files are renamed where they land, emptied directories vanish" "flatten A/X.TXT → X.TXT
+flatten A/B/Y.TXT → Y.TXT
+A → a
+X.TXT → x.txt
+Y.TXT → y.txt" "${flat[@]}"
+# report_value <label>: the figure the final report gives for <label> (dry run)
+report_value() { (cd "$work/tree" && "$BIN" --color=simple --dry-run --no-gitignore "${flat[@]}" . 2>&1) | sed 's/\x1b\[[0-9;]*m//g' | grep -o "$1[^0-9]*[0-9]\+" | grep -o '[0-9]\+$'; }
+got=$(report_value "Excluded Items")
+if [[ $got == 3 ]]; then pass=$((pass + 1)); else report "excluded entries are counted once although flattening walks the tree twice" "${flat[*]}" 3 "$got"; fi
+got=$(report_value "Scanned Dirs")
+if [[ $got == 2 ]]; then pass=$((pass + 1)); else report "dry run does not scan the directories flattening would remove" "${flat[*]}" 2 "$got"; fi
+want=$(cli "${flat[@]}" | actions | sort)
+got=$(cd "$work/tree" && "$BIN" --color=none --verbose --no-gitignore "${flat[@]}" . 2>&1 | actions | sort)
+if [[ $got == "$want" ]]; then pass=$((pass + 1)); else report "the real run does what the dry run showed" "${flat[*]}" "$want" "$got"; fi
+
 # --- JavaScript expressions (need the V8 bridge) -------------------------------------------
 
 probe=$(mkdir -p "$work/empty" && cd "$work/empty" && "$BIN" --color=none -d -r '/(?<n=>1)/\<n=>{n}/' . 2>&1)

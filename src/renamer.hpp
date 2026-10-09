@@ -64,6 +64,10 @@ class TransformerEngine {
     RegexSpec flatten_rx_spec;
     std::string config_error_; // an invalid --regex / --flatten-regex: reported by run() before anything is touched
     fs::path cwd_;             // where the program was started: the origin of the `depth` variable
+    // A dry run moves nothing, so the rename phase is shown the tree the flatten phase would
+    // leave: where each flattened file would land, and the directories it would empty and remove.
+    std::unordered_map<std::string, fs::path> dry_flattened_;
+    std::unordered_set<std::string> dry_removed_dirs_;
     ProgressSink* sink_ = nullptr;
 
     void report_error(std::string_view message) {
@@ -89,7 +93,6 @@ class TransformerEngine {
                 excluded_at_depth.resize(static_cast<std::size_t>(depth) + 1);
                 excluded_at_depth.back() = excluded;
             }
-            if (excluded) stats.excluded_items++;
             visit(entry, std::string_view(rel), is_dir, excluded);
             return is_dir && excluded;
         };
@@ -196,6 +199,7 @@ private:
 
             if (opts.dry_run) {
                 stats.flattened_files++;
+                dry_flattened_.emplace(src_file.native(), root / dest_name);
                 continue;
             }
             std::error_code rename_ec;
@@ -205,10 +209,11 @@ private:
         }
 
         if (!opts.dry_run) cleanup_empty_dirs(root);
+        else predict_removed_dirs(root);
     }
 
-    // One pass, deepest directories first, so emptied parents are removed in the same sweep.
-    void cleanup_empty_dirs(const fs::path& root) {
+    // Every real directory below `root` (not symlinks), deepest first.
+    static std::vector<fs::path> directories_deepest_first(const fs::path& root) {
         std::vector<fs::path> dirs;
         std::error_code ec;
         for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
@@ -216,15 +221,34 @@ private:
             if (it->is_directory(type_ec) && !it->is_symlink(type_ec)) dirs.push_back(it->path());
         }
         std::ranges::sort(dirs, std::greater{}, [](const fs::path& p) { return p.native().size(); });
-        for (const fs::path& dir : dirs) {
+        return dirs;
+    }
+
+    // One pass, deepest directories first, so emptied parents are removed in the same sweep.
+    void cleanup_empty_dirs(const fs::path& root) {
+        for (const fs::path& dir : directories_deepest_first(root)) {
             std::error_code rm_ec;
             if (fs::is_empty(dir, rm_ec) && !rm_ec) fs::remove(dir, rm_ec);
         }
     }
 
+    // What cleanup_empty_dirs would remove once the dry run's flattened files had gone: the
+    // directories left holding nothing but flattened files and directories removed before them.
+    void predict_removed_dirs(const fs::path& root) {
+        for (const fs::path& dir : directories_deepest_first(root)) {
+            std::error_code ec;
+            bool empty = true;
+            for (fs::directory_iterator it(dir, ec), end; empty && !ec && it != end; it.increment(ec)) {
+                const std::string& p = it->path().native();
+                empty = dry_flattened_.contains(p) || dry_removed_dirs_.contains(p);
+            }
+            if (empty && !ec) dry_removed_dirs_.insert(dir.native());
+        }
+    }
+
     void execute_renaming(const fs::path& root) {
         struct Item {
-            fs::directory_entry entry;
+            fs::path path;
             std::size_t sort_key; // path length: a child always sorts before its parent
             bool is_dir;
             std::size_t index = 0;      // `index` / `nameIndex` expression variables
@@ -233,9 +257,19 @@ private:
         std::vector<Item> items;
 
         walk(root, opts.recursive, [&](const fs::directory_entry& entry, std::string_view, bool is_dir, bool excluded) {
+            fs::path path = entry.path();
+            if (opts.dry_run) { // see the tree as the flatten phase would have left it
+                if (dry_removed_dirs_.contains(path.native())) return;
+                if (const auto moved = dry_flattened_.find(path.native()); moved != dry_flattened_.end()) {
+                    path = moved->second;
+                    excluded = opts.filter.is_excluded(path.filename().string(), false);
+                }
+            }
             if (is_dir) stats.scanned_dirs++;
             else stats.scanned_files++;
-            if (!excluded) items.push_back({entry, entry.path().native().size(), is_dir});
+            // Counted here, not in walk(): with flattening the tree is walked twice.
+            if (excluded) stats.excluded_items++;
+            else items.push_back({path, path.native().size(), is_dir});
         });
 
         if (rename_rx_spec.valid && rename_rx_spec.tmpl.has_expressions()) number_items(items);
@@ -246,7 +280,7 @@ private:
 
         for (std::size_t i = 0; i < total && !sink_->cancelled(); ++i) {
             const Item& item = items[i];
-            const fs::path& path = item.entry.path();
+            const fs::path& path = item.path;
             const std::string filename = path.filename().string();
             const std::string rel_str = path.lexically_relative(root).string();
             const EntryContext ctx{item.index, item.name_index, ttf::utf8_length(filename), depth_of(path)};
@@ -298,14 +332,14 @@ private:
     static void number_items(Items& items) {
         std::vector<std::size_t> order(items.size());
         std::iota(order.begin(), order.end(), std::size_t{0});
-        std::ranges::sort(order, {}, [&](std::size_t i) -> const std::string& { return items[i].entry.path().native(); });
+        std::ranges::sort(order, {}, [&](std::size_t i) -> const std::string& { return items[i].path.native(); });
         std::size_t counts[2] = {0, 0};
         std::unordered_map<std::string, std::size_t> same_name[2];
         for (const std::size_t i : order) {
             auto& item = items[i];
             const std::size_t kind = item.is_dir ? 1 : 0;
             item.index = ++counts[kind];
-            item.name_index = ++same_name[kind][item.entry.path().filename().string()];
+            item.name_index = ++same_name[kind][item.path.filename().string()];
         }
     }
 
