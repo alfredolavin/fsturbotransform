@@ -21,6 +21,17 @@ QQC2.ApplicationWindow {
     title: "FS-Turbo-Transformer"
     color: Kirigami.Theme.backgroundColor
 
+    // the author's signature: a strip of its own at the bottom-right, under the panes
+    footer: Item {
+        implicitHeight: signature.implicitHeight + Kirigami.Units.smallSpacing * 2
+        AuthorSignature {
+            id: signature
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
     function number(key) {
         return window.hasStats ? Number(window.stats[key]).toLocaleString(Qt.locale(), "f", 0) : "–";
     }
@@ -45,11 +56,15 @@ QQC2.ApplicationWindow {
         title: qsTr("Apply the changes?")
         width: Math.min(window.width - 80, 560)
 
-        contentItem: QQC2.Label {
-            wrapMode: Text.Wrap
-            text: qsTr("Files and directories in <b>%1</b> will be renamed%2 for real. This cannot be undone automatically; run a preview first if you have not.")
-                    .arg(window.controller.targetDir)
-                    .arg(window.controller.flatten || window.controller.flattenRegex !== "" ? qsTr(" and flattened") : "")
+        contentItem: ColumnLayout {
+            QQC2.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Files and directories in <b>%1</b> will be renamed%2 for real. This cannot be undone automatically; run a preview first if you have not.")
+                        .arg(window.controller.targetDir)
+                        .arg(window.controller.flatten || window.controller.flattenRegex !== "" ? qsTr(" and flattened") : "")
+            }
+            AuthorSignature { Layout.alignment: Qt.AlignRight }
         }
 
         footer: QQC2.DialogButtonBox {
@@ -85,16 +100,79 @@ QQC2.ApplicationWindow {
             shadow.size: 20
             shadow.color: Qt.rgba(0, 0, 0, 0.25)
         }
-        contentItem: QQC2.Label {
-            textFormat: Text.StyledText
-            wrapMode: Text.Wrap
-            text: qsTr("<b>/pattern/replacement/flags</b> — PCRE2: lookahead/lookbehind, \\K, UTF-8. Flags: <tt>i</tt> caseless, <tt>m</tt> multiline, <tt>s</tt> dot-all, <tt>x</tt> extended.<br><br>"
-                     + "<b>Replacement:</b> <tt>$1 \\1</tt> groups, <tt>$&lt;name&gt; \\&lt;name&gt;</tt> named groups, <tt>\\U \\L \\E \\C</tt> case.<br><br>"
-                     + "<b>Expressions:</b> <tt>(?&lt;n=&gt;\\d+)</tt> makes the group a number; <tt>\\&lt;n=&gt;{round(n/2)}</tt> is replaced by the JavaScript expression's value "
-                     + "(<tt>\\&lt;n=v&gt;{…}</tt> names it <tt>v</tt>; default <tt>val</tt>). Everything in Math is in scope.<br><br>"
-                     + "<b>Variables:</b> <tt>index</tt> (file number; directories count apart), <tt>nameIndex</tt> (among same-named entries), "
-                     + "<tt>nameLength</tt>, <tt>depth</tt> (directories below the target), <tt>$0 $1 $name</tt> (raw text).<br><br>"
-                     + "e.g. <tt>/(?&lt;d=&gt;\\d+)-(?&lt;m=&gt;\\d+)/\\&lt;d=&gt;{round(d*10+m/2)}_\\&lt;m&gt;/</tt>")
+        contentItem: ColumnLayout {
+            QQC2.Label {
+                Layout.fillWidth: true
+                textFormat: Text.StyledText
+                wrapMode: Text.Wrap
+                text: qsTr("<b>/pattern/replacement/flags</b> — PCRE2: lookahead/lookbehind, \\K, UTF-8. Flags: <tt>i</tt> caseless, <tt>m</tt> multiline, <tt>s</tt> dot-all, <tt>x</tt> extended.<br><br>"
+                         + "<b>Replacement:</b> <tt>$1 \\1</tt> groups, <tt>$&lt;name&gt; \\&lt;name&gt;</tt> named groups, <tt>\\U \\L \\E \\C</tt> case.<br><br>"
+                         + "<b>Expressions:</b> <tt>(?&lt;n=&gt;\\d+)</tt> makes the group a number; <tt>\\&lt;n=&gt;{round(n/2)}</tt> is replaced by the JavaScript expression's value "
+                         + "(<tt>\\&lt;n=v&gt;{…}</tt> names it <tt>v</tt>; default <tt>val</tt>). Everything in Math is in scope.<br><br>"
+                         + "<b>Variables:</b> <tt>index</tt> (file number; directories count apart), <tt>nameIndex</tt> (among same-named entries), "
+                         + "<tt>nameLength</tt>, <tt>depth</tt> (directories below the target), <tt>$0 $1 $name</tt> (raw text).<br><br>"
+                         + "e.g. <tt>/(?&lt;d=&gt;\\d+)-(?&lt;m=&gt;\\d+)/\\&lt;d=&gt;{round(d*10+m/2)}_\\&lt;m&gt;/</tt>")
+            }
+            AuthorSignature { Layout.alignment: Qt.AlignRight }
+        }
+    }
+
+    QQC2.Dialog {
+        id: aboutDialog
+        parent: QQC2.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: qsTr("About FS-Turbo-Transformer")
+        standardButtons: QQC2.Dialog.Close
+        contentItem: ColumnLayout {
+            spacing: 8
+            RowLayout {
+                spacing: 12
+                Image {
+                    source: "icons/app.png"
+                    sourceSize: Qt.size(48 * Screen.devicePixelRatio, 48 * Screen.devicePixelRatio)
+                    Layout.preferredWidth: 48
+                    Layout.preferredHeight: 48
+                }
+                Kirigami.Heading { text: "FS-Turbo-Transformer " + Qt.application.version; level: 2 }
+            }
+            QQC2.Label {
+                text: qsTr("Rename · re-case · flatten directory trees")
+                wrapMode: Text.Wrap
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 28
+            }
+
+            // ---- the author's dedication (the shared About text, in English for this UI)
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.largeSpacing
+
+                QQC2.Label {
+                    Layout.alignment: Qt.AlignHCenter
+                    font.bold: true
+                    font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.3
+                    text: "alfredolavin@gmail.com"
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Item {
+                    implicitHeight: Kirigami.Units.gridUnit * 2
+                }
+
+                QQC2.Label {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 28
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                    Layout.alignment: Qt.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    font.italic: true
+                    lineHeight: 1.3
+                    text: "\"...dedicated to my parents, to my children Eduardo, Marina and Leonardo; and to Cristina, my beautiful, faithful and intelligent wife, without whom I would be nothing. She endures everything, she gives everything. The best mother to our children, the best wife by my side and the best woman in my bed... and on top of that, she writes my dedications\""
+                }
+            }
+
+            AuthorSignature { Layout.alignment: Qt.AlignRight }
         }
     }
 
@@ -155,6 +233,20 @@ QQC2.ApplicationWindow {
                     }
                 }
                 Item { Layout.fillWidth: true }
+                QQC2.ToolButton {
+                    Accessible.name: qsTr("About")
+                    QQC2.ToolTip.text: Accessible.name
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: aboutDialog.open()
+                    contentItem: Kirigami.Icon {
+                        source: "help-about"
+                        isMask: true
+                        color: "white"
+                        implicitWidth: 22
+                        implicitHeight: 22
+                    }
+                }
             }
         }
 

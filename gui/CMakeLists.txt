@@ -28,6 +28,7 @@ set(FSTURBO_QML_FILES
     qml/PropertyIcon.qml
     qml/RegexEditor.qml
     qml/StatTile.qml
+    qml/AuthorSignature.qml
 )
 # Served from the module's root (qrc:/qt/qml/FsTurbo/Main.qml), next to icons/.
 foreach(qml_file IN LISTS FSTURBO_QML_FILES)
