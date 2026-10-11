@@ -1,3 +1,7 @@
+# Historial del agente
+
+Una viñeta por tarea: `fecha ISO - interpretación`.
+
 Task: Create C++ CLI tool for recursive file/dir transformation
 Task: Upgrade codebase to C++26 standard (-std=c++26) utilizing C++26 features (std::print, std::println, constexpr improvements, pack indexing, C++26 string formatting)
 Task: Add rule/memory for rich terminal output (Sixel graphics, real-time animated progress bar with gradients, mini-terminal widget with Fira Code font & syntax highlighting, --color=[full|none|simple|terminal] switch)
@@ -15,3 +19,4 @@ Task: Optional final report (--no-report): the live mini-console takes the whole
 Task: Header redesign (slim bar, title at 1 em, 4-row icon standing out of the bar) and fuller Sixel colour: ask the terminal for its colour registers (XTSMGRAPHICS) and use up to 1024, lossless palette when the distinct colours fit, finer 6-bit median cut otherwise, 16-bit palette indices
 Task: Kitty graphics protocol backend (24-bit RGBA with real alpha, zlib, stable image ids replaced in place) chosen before Sixel by detection or --graphics / $FSTURBO_GRAPHICS; fix auto detection that broke when terminals answered the colour-register query before DA1 (Konsole); tests for both
 Task: QML GUI (fsturbotransform-gui, Qt 6 + Kirigami, org.kde.desktop): the engine reports through ProgressSink (terminal: TerminalSink) and runs on a worker thread; regex editors with syntax highlighting from src/regex_tokens.hpp (split like RegexSpec/PatternRule, JS expression blocks, PCRE2 error underline); a property icon in every control (Tango first, then Breeze, recoloured by an image provider); preview/apply/stop, gradient progress, stats tiles, change list; tests/regex_tokens_test.cpp and tests/gui_controller_test.cpp (ctest)
+- 2026-10-11T15:01:11-03:00 - Unificar el historial del agente en agent_history.md (crear el que falta) y registrar la regla en CLAUDE.md global.
