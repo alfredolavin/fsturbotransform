@@ -337,19 +337,7 @@ class LiveDashboard {
         const float elapsed = std::chrono::duration<float>(now - run_start_).count();
 
         // Gradient fill with glossy top highlight and a travelling shimmer.
-        const float fill_w = std::max(ratio() * g.bar_w, ratio() > 0.0f ? g.bar_h : 0.0f);
-        if (fill_w > 0.0f) {
-            const float span = fill_w + 2.0f * g.bar_h;
-            const float shimmer_x = p.shimmer ? g.bar_x - g.bar_h + std::fmod(elapsed * g.bar_w * 0.55f, span) : -1e9f;
-            frame_.fill_rounded_rect(g.bar_x, g.bar_y, fill_w, g.bar_h, g.bar_h * 0.5f, [&](int x, int y) {
-                const float t = (static_cast<float>(x) - g.bar_x) / g.bar_w;
-                Rgb c = gradient(t, p.gradient[0], p.gradient[1], p.gradient[2]);
-                const float d = (static_cast<float>(x) - shimmer_x) / g.bar_h;
-                c = lerp(c, Rgb{255, 255, 255}, 0.55f * std::exp(-d * d));
-                if (static_cast<float>(y) < g.bar_y + g.bar_h * 0.4f) c = lerp(c, Rgb{255, 255, 255}, 0.18f);
-                return c;
-            });
-        }
+        ui::draw_gradient_fill(frame_, g.bar_x, g.bar_y, g.bar_w, g.bar_h, ratio(), elapsed);
 
         // Progress text: phase (bold) + percentage + counts
         const std::string text = fit_right(progress_text(), static_cast<std::size_t>(g.progress_cols));

@@ -29,7 +29,12 @@ with the `.ColorScheme-*` classes, which `gui/icon_provider.hpp` recolours from 
 | error.svg | errors | Breeze `status/64/dialog-error.svg` | LGPL-3.0-or-later |
 | warning.svg | warnings | Breeze `status/64/dialog-warning.svg` | LGPL-3.0-or-later |
 | duration.svg | run duration | Breeze `actions/22/chronometer.svg` | LGPL-3.0-or-later |
+| console.svg | "Console format…" button | Breeze `apps/22/utilities-terminal.svg` | LGPL-3.0-or-later |
 | info.svg | expression syntax help | Tango (Inkscape) `actions/info.svg` | GPL-2.0-or-later (Inkscape) |
 
 Tango: `/snap/inkscape/current/share/inkscape/icons/Tango/scalable/actions/` (Inkscape 1.x snap).
 Breeze: `/usr/share/icons/breeze/` (kf6-breeze-icon-theme).
+
+The "Console format" dialog uses the shared controls of `plasmoids/shared` (copied into `gui/qml/` by its
+`sync.sh fsturbotransform`): their Tango icons are bundled in `gui/qml/controls/icons/` (see the SOURCES.md
+there, written by `shared/tools/gen_icons.py`), the Breeze ones come from the icon theme by name.

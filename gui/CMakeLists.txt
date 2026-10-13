@@ -7,6 +7,8 @@ qt_add_executable(fsturbotransform-gui
     main.cpp
     change_model.cpp
     change_model.hpp
+    console_format.cpp
+    console_format.hpp
     icon_provider.hpp
     regex_highlighter.cpp
     regex_highlighter.hpp
@@ -29,6 +31,8 @@ set(FSTURBO_QML_FILES
     qml/RegexEditor.qml
     qml/StatTile.qml
     qml/AuthorSignature.qml
+    qml/ConsoleFormatDialog.qml
+    qml/ConsoleView.qml
 )
 # Served from the module's root (qrc:/qt/qml/FsTurbo/Main.qml), next to icons/.
 foreach(qml_file IN LISTS FSTURBO_QML_FILES)
@@ -38,11 +42,24 @@ endforeach()
 
 file(GLOB FSTURBO_ICONS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS icons/*.svg icons/*.png)
 
+# The shared modules of ~/.insync/trabajo/proyectos/plasmoids/shared, copied into qml/ by its sync.sh
+# (`sync.sh fsturbotransform`, then `tools/gen_icons.py gui/qml` for the Tango icons): plain resources,
+# not module types, served without the qml/ prefix so their relative imports ("../controls") work.
+file(GLOB FSTURBO_SHARED RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS
+    qml/controls/*.qml qml/controls/*.js qml/controls/icons/*.svg qml/controls/icons/bundled.js
+    qml/common/*.qml qml/common/*.js
+    qml/colorspec/*.qml qml/colorspec/*.js
+    qml/gradientpicker/code/*.js)
+foreach(f ${FSTURBO_SHARED})
+    string(REGEX REPLACE "^qml/" "" alias "${f}")
+    set_source_files_properties(${f} PROPERTIES QT_RESOURCE_ALIAS "${alias}")
+endforeach()
+
 qt_add_qml_module(fsturbotransform-gui
     URI FsTurbo
     VERSION 1.0
     QML_FILES ${FSTURBO_QML_FILES}
-    RESOURCES ${FSTURBO_ICONS}
+    RESOURCES ${FSTURBO_ICONS} ${FSTURBO_SHARED}
 )
 
 # Qt is linked dynamically and loads the QML plugins at run time: nothing to link statically
@@ -57,7 +74,7 @@ target_compile_options(fsturbotransform-gui PRIVATE -O2 -Wall -Wextra)
 # #embed is not tracked by every dependency scanner: rebuild when the font changes.
 set_source_files_properties(main.cpp PROPERTIES OBJECT_DEPENDS "${PROJECT_SOURCE_DIR}/src/FiraCode-Regular.ttf")
 target_link_libraries(fsturbotransform-gui PRIVATE
-    Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Svg
+    Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Svg KF6::I18n KF6::I18nQml KF6::ColorScheme KF6::ConfigCore
     PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
 if(TARGET fsturbo_js)
     add_dependencies(fsturbotransform-gui fsturbo_js)

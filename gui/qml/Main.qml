@@ -32,6 +32,16 @@ QQC2.ApplicationWindow {
         }
     }
 
+    // The console format dialog, created on first use (it holds many shared controls).
+    property var consoleFormatDialog: null
+    function openConsoleFormat() {
+        if (!consoleFormatDialog)
+            consoleFormatDialog = Qt.createComponent("ConsoleFormatDialog.qml").createObject(window, { transientParent: window });
+        consoleFormatDialog.show();
+        consoleFormatDialog.raise();
+        consoleFormatDialog.requestActivate();
+    }
+
     function number(key) {
         return window.hasStats ? Number(window.stats[key]).toLocaleString(Qt.locale(), "f", 0) : "–";
     }
@@ -576,34 +586,23 @@ QQC2.ApplicationWindow {
                     Layout.bottomMargin: 6
                     title: window.controller.previewRun ? qsTr("Changes that would be made") : qsTr("Changes made")
                     iconName: "preview"
-                    headerExtra: QQC2.Label {
-                        text: window.controller.changes.count.toLocaleString(Qt.locale(), "f", 0)
-                        opacity: 0.7
+                    headerExtra: IconButton {
+                        iconName: "console"
+                        label: qsTr("Console format…")
+                        QQC2.ToolTip.text: qsTr("Font and colours of this console and of the terminal's")
+                        QQC2.ToolTip.visible: hovered
+                        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                        onClicked: window.openConsoleFormat()
                     }
 
-                    QQC2.ScrollView {
+                    ConsoleView {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.minimumHeight: 120
-
-                        ListView {
-                            id: changeList
-                            clip: true
-                            model: window.controller.changes
-                            spacing: 1
-                            reuseItems: true
-                            delegate: ChangeDelegate {}
-
-                            Kirigami.PlaceholderMessage {
-                                anchors.centerIn: parent
-                                width: parent.width - 40
-                                visible: changeList.count === 0
-                                icon.source: window.controller.hasResults ? "" : "image://icon/preview?" + Kirigami.Theme.textColor
-                                text: window.controller.running ? qsTr("Working…")
-                                    : window.controller.hasResults ? qsTr("Nothing to change")
-                                    : qsTr("Press Preview to see what would change")
-                            }
-                        }
+                        Layout.minimumHeight: 140
+                        model: window.controller.changes
+                        emptyText: window.controller.running ? qsTr("Working…")
+                                 : window.controller.hasResults ? qsTr("Nothing to change")
+                                 : qsTr("Press Preview to see what would change")
                     }
                 }
             }

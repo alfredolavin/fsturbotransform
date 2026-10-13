@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,9 +49,9 @@ struct ConsoleFontSet {
     ttf::Font regular{fira_code_bytes, 400.0f};
     ttf::Font bold{fira_code_bytes, 700.0f};
     std::string family = "Fira Code";
+    std::string wanted = style::active().font_family; // what the format asked for
 
     ConsoleFontSet() {
-        const std::string& wanted = style::active().font_family;
         if (wanted.empty()) return;
         const auto read = [](const std::string& path) {
             std::ifstream in(path, std::ios::binary);
@@ -70,9 +71,11 @@ struct ConsoleFontSet {
     }
 };
 
+// Built again only when the format's family changes (the GUI's preview does that while it runs).
 inline const ConsoleFontSet& console_fonts() {
-    static const ConsoleFontSet fonts;
-    return fonts;
+    static std::unique_ptr<ConsoleFontSet> fonts;
+    if (!fonts || fonts->wanted != style::active().font_family) fonts = std::make_unique<ConsoleFontSet>();
+    return *fonts;
 }
 
 // Console font metrics at the terminal's cell height (scaled by the format's font_scale).
@@ -124,6 +127,24 @@ inline int draw_console_window(sixel::Canvas& c, ConsoleFonts& f, float y, float
     // The application icon sits as the window icon just left of the centered title.
     if (p.app_icon) sixel::draw_app_icon(c, title_x - f.cell_h - f.adv / 2, static_cast<int>(y) + 1, f.cell_h);
     return baseline;
+}
+
+// The progress bar's fill: the format's gradient with a glossy top and, if the format wants it, a
+// light travelling along it (`elapsed` seconds into the run).
+inline void draw_gradient_fill(sixel::Canvas& c, float bar_x, float bar_y, float bar_w, float bar_h, float ratio, float elapsed) {
+    const style::ConsolePalette& p = style::active();
+    const float fill_w = std::max(ratio * bar_w, ratio > 0.0f ? bar_h : 0.0f);
+    if (fill_w <= 0.0f) return;
+    const float span = fill_w + 2.0f * bar_h;
+    const float shimmer_x = p.shimmer ? bar_x - bar_h + std::fmod(elapsed * bar_w * 0.55f, span) : -1e9f;
+    c.fill_rounded_rect(bar_x, bar_y, fill_w, bar_h, bar_h * 0.5f, [&](int x, int y) {
+        const float t = (static_cast<float>(x) - bar_x) / bar_w;
+        Rgb col = gradient(t, p.gradient[0], p.gradient[1], p.gradient[2]);
+        const float d = (static_cast<float>(x) - shimmer_x) / bar_h;
+        col = lerp(col, Rgb{255, 255, 255}, 0.55f * std::exp(-d * d));
+        if (static_cast<float>(y) < bar_y + bar_h * 0.4f) col = lerp(col, Rgb{255, 255, 255}, 0.18f);
+        return col;
+    });
 }
 
 // Right-aligned text inside the title bar.
