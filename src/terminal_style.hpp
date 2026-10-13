@@ -11,6 +11,7 @@
 #include <vector>
 #include <unistd.h>
 #include "color.hpp"
+#include "console_style.hpp"
 #include "graphics.hpp"
 #include "sixel_renderer.hpp"
 #include "terminal_probe.hpp"
@@ -240,20 +241,22 @@ struct Span {
     Role role = Role::Plain;
 };
 
-constexpr Rgb role_color(Role r) {
+// The colours of the console format (console_style.hpp).
+inline Rgb role_color(Role r) {
+    const style::ConsolePalette& p = style::active();
     switch (r) {
-        case Role::Prompt: return palette::neon_cyan;
-        case Role::Action: return palette::action;
-        case Role::Dir: return palette::path_dir;
-        case Role::Name: return palette::path_name;
-        case Role::Ext: return palette::path_ext;
-        case Role::Number: return palette::number;
-        case Role::Arrow: return palette::arrow;
-        case Role::Dest: return palette::dest;
-        case Role::Note: return palette::note;
+        case Role::Prompt: return p.prompt;
+        case Role::Action: return p.action;
+        case Role::Dir: return p.directory;
+        case Role::Name: return p.name;
+        case Role::Ext: return p.extension;
+        case Role::Number: return p.number;
+        case Role::Arrow: return p.arrow;
+        case Role::Dest: return p.new_name;
+        case Role::Note: return p.note;
         case Role::Plain: break;
     }
-    return palette::path_name;
+    return p.name;
 }
 
 // Splits a path into directory / name (digit runs as numbers) / extension tokens.

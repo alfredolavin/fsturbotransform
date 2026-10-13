@@ -5,6 +5,7 @@
 # Usage: tests/regex.sh [path/to/fsturbotransform]
 #   The expression tests need libfsturbo_js.so (libnode-dev); without it they are skipped.
 set -u
+export FSTURBO_CONSOLE_STYLE=/nonexistent/console.conf # the default console format, not the user's
 BIN=$(realpath "${1:-./fsturbotransform}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

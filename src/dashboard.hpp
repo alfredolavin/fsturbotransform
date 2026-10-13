@@ -85,8 +85,6 @@ class LiveDashboard {
         std::size_t cols = 0;
     };
 
-    static constexpr std::string_view kTitle = "MINI-TERMINAL · Fira Code Engine";
-
     bool configured_ = false;
     bool interactive_ = false;
     bool sixel_ = false;
@@ -200,7 +198,8 @@ class LiveDashboard {
         const int W = width_cols_;
         std::string out;
         out.reserve(4096);
-        const std::string border = rgb_fg(palette::console_border);
+        const style::ConsolePalette& p = style::active();
+        const std::string border = rgb_fg(p.border);
         const std::string reset_s(reset());
 
         // Row 0: animated gradient bar with eighth-block sub-cell resolution and a moving shimmer.
@@ -209,7 +208,7 @@ class LiveDashboard {
         const int full = static_cast<int>(exact);
         const int eighths = static_cast<int>((exact - static_cast<float>(full)) * 8.0f);
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - run_start_).count();
-        const float shimmer = static_cast<float>(ms % 1600) / 1600.0f * static_cast<float>(bar_w + 8) - 4.0f;
+        const float shimmer = p.shimmer ? static_cast<float>(ms % 1600) / 1600.0f * static_cast<float>(bar_w + 8) - 4.0f : -1e9f;
         static constexpr std::array<std::string_view, 8> partial{" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"};
 
         out += "\x1b[2K ";
@@ -217,7 +216,7 @@ class LiveDashboard {
         out += "▕";
         for (int i = 0; i < bar_w; ++i) {
             const float t = static_cast<float>(i) / static_cast<float>(bar_w - 1);
-            Rgb c = gradient(t, palette::neon_cyan, palette::neon_magenta, palette::neon_gold);
+            Rgb c = gradient(t, p.gradient[0], p.gradient[1], p.gradient[2]);
             const float glow = std::max(0.0f, 1.0f - std::fabs(static_cast<float>(i) - shimmer) / 3.0f);
             c = lerp(c, Rgb{255, 255, 255}, glow * 0.55f);
             if (i < full) {
@@ -225,42 +224,42 @@ class LiveDashboard {
                 out += "█";
             } else if (i == full && eighths > 0) {
                 out += rgb_fg(c);
-                out += rgb_bg(palette::track);
+                out += rgb_bg(p.track);
                 out += partial[static_cast<std::size_t>(eighths)];
                 out += reset_s;
             } else {
-                out += rgb_fg(palette::track);
+                out += rgb_fg(p.track);
                 out += "█";
             }
         }
         out += border;
         out += "▏";
         out += reset_s;
-        out += std::format(" {}{}{:<7}{} {}{:5.1f}%{}  {}{}/{}{}", bold(), rgb_fg(palette::action), phase_, reset_s,
-                           rgb_fg(palette::path_name), ratio() * 100.0f, reset_s, rgb_fg(palette::note), current_, total_, reset_s);
+        out += std::format(" {}{}{:<7}{} {}{:5.1f}%{}  {}{}/{}{}", bold(), rgb_fg(p.action), phase_, reset_s,
+                           rgb_fg(p.name), ratio() * 100.0f, reset_s, rgb_fg(p.note), current_, total_, reset_s);
         out += "\n";
 
         // Row 1: window top edge with title and live stats
         out += "\x1b[2K";
-        out += ui::ansi_window_top(W, kTitle, stats_text(now), palette::note);
+        out += ui::ansi_window_top(W, p.title, stats_text(now), p.note);
         out += "\n";
 
         // Rows 2..: console history + active line
         const std::size_t inner = static_cast<std::size_t>(W - 4);
         layout_console(inner - 1);
-        const bool cursor_on = (ms / 530) % 2 == 0;
+        const bool cursor_on = !p.blink_cursor || (ms / 530) % 2 == 0;
         for (std::size_t li = 0; li < laid_.size(); ++li) {
             const LaidOutLine& l = laid_[li];
             std::string content;
             for (const Span& s : l.spans) {
-                if (s.role == Role::Action) content += bold();
+                if (s.role == Role::Action && p.bold_actions) content += bold();
                 if (s.role != Role::Plain) content += rgb_fg(role_color(s.role));
                 content += s.text;
                 content += reset_s;
             }
             std::size_t used = l.cols;
             if (li + 1 == laid_.size() && used < inner) {
-                content += rgb_fg(palette::neon_cyan);
+                content += rgb_fg(p.prompt);
                 content += cursor_on ? "▌" : " ";
                 content += reset_s;
                 ++used;
@@ -313,25 +312,27 @@ class LiveDashboard {
         sixel::Canvas& c = base_;
 
         // Progress pill
-        c.fill_rounded_rect(0.0f, 1.0f, W, CH - 2.0f, (CH - 2.0f) * 0.5f, palette::console_border);
-        c.fill_rounded_rect(1.0f, 2.0f, W - 2.0f, CH - 4.0f, (CH - 4.0f) * 0.5f, palette::console_bg);
-        c.fill_rounded_rect(g.bar_x, g.bar_y, g.bar_w, g.bar_h, g.bar_h * 0.5f, palette::track);
+        const style::ConsolePalette& p = style::active();
+        c.fill_rounded_rect(0.0f, 1.0f, W, CH - 2.0f, (CH - 2.0f) * 0.5f, p.border);
+        c.fill_rounded_rect(1.0f, 2.0f, W - 2.0f, CH - 4.0f, (CH - 4.0f) * 0.5f, p.background);
+        c.fill_rounded_rect(g.bar_x, g.bar_y, g.bar_w, g.bar_h, g.bar_h * 0.5f, p.track);
 
         // Console window with title bar and traffic lights
         const float wy = static_cast<float>(g.win_y);
-        g.title_baseline = ui::draw_console_window(c, f, wy, static_cast<float>(g.h) - wy - 1.0f, kTitle);
+        g.title_baseline = ui::draw_console_window(c, f, wy, static_cast<float>(g.h) - wy - 1.0f, p.title);
         frame_ = base_;
     }
 
     void draw_spans(const std::vector<Span>& spans, int x, int baseline) {
         for (const Span& s : spans) {
-            ttf::GlyphCache& gc = s.role == Role::Action ? fonts_->bold : fonts_->regular;
+            ttf::GlyphCache& gc = s.role == Role::Action && style::active().bold_actions ? fonts_->bold : fonts_->regular;
             x = frame_.draw_text(gc, x, baseline, s.text, role_color(s.role), geo_.adv);
         }
     }
 
     std::string render_sixel(clock::time_point now) {
         const Geometry& g = geo_;
+        const style::ConsolePalette& p = style::active();
         frame_ = base_;
         const float elapsed = std::chrono::duration<float>(now - run_start_).count();
 
@@ -339,10 +340,10 @@ class LiveDashboard {
         const float fill_w = std::max(ratio() * g.bar_w, ratio() > 0.0f ? g.bar_h : 0.0f);
         if (fill_w > 0.0f) {
             const float span = fill_w + 2.0f * g.bar_h;
-            const float shimmer_x = g.bar_x - g.bar_h + std::fmod(elapsed * g.bar_w * 0.55f, span);
+            const float shimmer_x = p.shimmer ? g.bar_x - g.bar_h + std::fmod(elapsed * g.bar_w * 0.55f, span) : -1e9f;
             frame_.fill_rounded_rect(g.bar_x, g.bar_y, fill_w, g.bar_h, g.bar_h * 0.5f, [&](int x, int y) {
                 const float t = (static_cast<float>(x) - g.bar_x) / g.bar_w;
-                Rgb c = gradient(t, palette::neon_cyan, palette::neon_magenta, palette::neon_gold);
+                Rgb c = gradient(t, p.gradient[0], p.gradient[1], p.gradient[2]);
                 const float d = (static_cast<float>(x) - shimmer_x) / g.bar_h;
                 c = lerp(c, Rgb{255, 255, 255}, 0.55f * std::exp(-d * d));
                 if (static_cast<float>(y) < g.bar_y + g.bar_h * 0.4f) c = lerp(c, Rgb{255, 255, 255}, 0.18f);
@@ -353,19 +354,19 @@ class LiveDashboard {
         // Progress text: phase (bold) + percentage + counts
         const std::string text = fit_right(progress_text(), static_cast<std::size_t>(g.progress_cols));
         const std::size_t phase_len = std::min(text.size(), phase_.size());
-        int x = frame_.draw_text(fonts_->bold, g.progress_text_x, g.row0_baseline, std::string_view(text).substr(0, phase_len), palette::action, g.adv);
-        frame_.draw_text(fonts_->regular, x, g.row0_baseline, std::string_view(text).substr(phase_len), palette::path_name, g.adv);
+        int x = frame_.draw_text(fonts_->bold, g.progress_text_x, g.row0_baseline, std::string_view(text).substr(0, phase_len), p.action, g.adv);
+        frame_.draw_text(fonts_->regular, x, g.row0_baseline, std::string_view(text).substr(phase_len), p.name, g.adv);
 
         // Live stats right-aligned in the title bar
-        ui::draw_title_status(frame_, *fonts_, g.title_baseline, stats_text(now), palette::note);
+        ui::draw_title_status(frame_, *fonts_, g.title_baseline, stats_text(now), p.note);
 
         // Console lines + blinking block cursor on the active line
         layout_console(static_cast<std::size_t>(g.text_cols - 1));
         for (std::size_t i = 0; i < laid_.size(); ++i) draw_spans(laid_[i].spans, g.text_x, g.line_baseline[i]);
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - run_start_).count();
-        if ((ms / 530) % 2 == 0) {
+        if (!p.blink_cursor || (ms / 530) % 2 == 0) {
             const int cx = g.text_x + static_cast<int>(laid_.back().cols) * g.adv;
-            frame_.draw_text(fonts_->regular, cx, g.line_baseline.back(), "▌", palette::neon_cyan, g.adv);
+            frame_.draw_text(fonts_->regular, cx, g.line_baseline.back(), "▌", p.prompt, g.adv);
         }
         return gfx::image(frame_, gfx::kFrameId, width_cols_, frame_rows_);
     }

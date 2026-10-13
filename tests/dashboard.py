@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vt  # noqa: E402
 
 BIN = os.path.realpath(sys.argv[1] if len(sys.argv) > 1 else "./fsturbotransform")
+# The default console format, whatever the user's own ~/.config/fsturbotransform/console.conf says
+os.environ["FSTURBO_CONSOLE_STYLE"] = "/nonexistent/console.conf"
 passed = failed = 0
 
 
@@ -246,6 +248,28 @@ for label, terminal, graphics in (
 ):
     scr, code = run_auto(50, 100, **terminal)
     check(f"auto detection: {label}", code == 0 and bool(scr.images) == graphics, f"exit {code}, images {len(scr.images)}\n{scr.dump() if not graphics else ''}")
+
+# The console format (console_style.hpp): a style file changes the drawn colours, title and window.
+with tempfile.TemporaryDirectory() as tmp:
+    style = os.path.join(tmp, "console.conf")
+    with open(style, "w") as f:
+        f.write("background = #102030\ntitle = CUSTOM CONSOLE\ntraffic_lights = false\n"
+                'action = {"src":"fixed","color":"#ffff8000","l":0,"c":0,"a":100}\n')
+    with tempfile.TemporaryDirectory() as root:
+        make_tree(root)
+        scr, code = vt.run([BIN, "--color=full", "--graphics=kitty", "--dry-run", "--no-gitignore", "--no-report", root], 50, 100,
+                           kitty=True, keep_pixels=True, env={"FSTURBO_CONSOLE_STYLE": style})
+    frames = [i for i in scr.images if i.get("id") == 2]
+    px = frames[-1]["pixels"] if frames else b""
+    colours = {tuple(px[k:k + 3]) for k in range(0, len(px), 4) if px[k + 3] == 255}
+    check("style: the background colour of the file is drawn", code == 0 and (0x10, 0x20, 0x30) in colours, f"exit {code}, {len(colours)} colours")
+    check("style: the default background is gone", (14, 14, 26) not in colours, "")
+    check("style: no traffic lights", (255, 95, 86) not in colours and (39, 201, 63) not in colours, "")
+    check("style: a colorspec JSON colour is drawn (orange actions)", (255, 128, 0) in colours, "")
+    with tempfile.TemporaryDirectory() as root:
+        make_tree(root)
+        scr, code = vt.run([BIN, "--color=terminal", "--dry-run", "--no-gitignore", "--console-style", style, root], 50, 100)
+    check("style: --console-style sets the ANSI window's title", code == 0 and any("CUSTOM CONSOLE" in l for l in scr.lines()), scr.dump())
 
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

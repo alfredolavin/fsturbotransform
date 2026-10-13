@@ -45,6 +45,7 @@ set(HEADERS
     src/case_converter.hpp
     src/cli_parser.hpp
     src/color.hpp
+    src/console_style.hpp
     src/console_window.hpp
     src/dashboard.hpp
     src/execution_stats.hpp
@@ -140,6 +141,9 @@ add_executable(regex_tokens_test tests/regex_tokens_test.cpp)
 target_include_directories(regex_tokens_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(regex_tokens_test PRIVATE PkgConfig::PCRE2 ${CMAKE_DL_LIBS})
 add_test(NAME regex_tokens COMMAND regex_tokens_test)
+add_executable(console_style_test tests/console_style_test.cpp)
+target_include_directories(console_style_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME console_style COMMAND console_style_test)
 
 # The QML GUI (fsturbotransform-gui): built when Qt 6 Quick is installed.
 option(FSTURBO_GUI "Build fsturbotransform-gui, the QML front end (needs Qt 6 Quick, Kirigami at run time)" ON)

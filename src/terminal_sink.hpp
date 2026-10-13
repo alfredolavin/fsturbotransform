@@ -39,7 +39,7 @@ public:
 
     void error(std::string_view message) override {
         static const bool err_tty = isatty(STDERR_FILENO) != 0;
-        std::string line = err_tty ? term::icon_line(sixel::Icon::Error, std::format("{}{}{}", term::rgb_fg(palette::error), message, term::reset()))
+        std::string line = err_tty ? term::icon_line(sixel::Icon::Error, std::format("{}{}{}", term::rgb_fg(style::active().error), message, term::reset()))
                                    : std::format("[ERROR] {}\n", message);
         dashboard_.log(std::move(line), term::Stream::Err);
     }

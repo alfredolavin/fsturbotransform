@@ -99,6 +99,12 @@ inline void print_help(const char* prog_name) {
     std::println("                           is at most 20% of the console's height (about 33 rows at 100 columns)");
     std::println("      --overwrite          Allow replacing existing entries on name collisions");
     std::println("      --extract-font       Save embedded Fira Code TTF font to disk (FiraCode-Regular.ttf)");
+    std::println();
+    std::println("{}", heading("CONSOLE FORMAT:"));
+    std::println("      --console-style FILE The mini-console's font, colours and window details (default:");
+    std::println("                           $FSTURBO_CONSOLE_STYLE, else ~/.config/fsturbotransform/console.conf,");
+    std::println("                           the file fsturbotransform-gui's \"Console format\" dialog writes)");
+    std::println("      --write-console-style  Write the format in use to that file (all keys, commented) and exit");
     std::println("  -h, --help               Display this styled help menu");
     std::println();
 }
@@ -116,7 +122,8 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
     should_exit = false;
     std::string_view color_mode = "auto";
     std::string_view graphics = std::getenv("FSTURBO_GRAPHICS") ? std::getenv("FSTURBO_GRAPHICS") : "auto";
-    bool want_help = false, want_font = false;
+    bool want_help = false, want_font = false, want_style_file = false;
+    fs::path console_style_file;
     bool auto_gitignore = true;
     std::vector<fs::path> gitignore_files;
 
@@ -143,6 +150,12 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
             opts.verbose = true;
         } else if (arg == "-h" || arg == "--help") {
             want_help = true;
+        } else if (arg == "--console-style" && has_value) {
+            console_style_file = argv[++i];
+        } else if (arg.starts_with("--console-style=")) {
+            console_style_file = std::string(arg.substr(16));
+        } else if (arg == "--write-console-style") {
+            want_style_file = true;
         } else if (arg == "--extract-font") {
             want_font = true;
         } else if (arg == "-l" || arg == "--lower") {
@@ -190,6 +203,20 @@ inline RenameOptions parse_args(int argc, char* argv[], bool& should_exit) {
     }
 
     term::init_terminal(color_mode, graphics);
+
+    // The console format, before anything is drawn (system colours come from the desktop scheme).
+    const fs::path style_path = console_style_file.empty() ? style::ConsoleStyle::default_path() : console_style_file;
+    std::error_code style_ec;
+    if (!console_style_file.empty() && !want_style_file && !fs::is_regular_file(style_path, style_ec))
+        std::println(stderr, "warning: cannot read console style {}", style_path.string());
+    const style::ConsoleStyle console_style = style::ConsoleStyle::load(style_path);
+    style::active() = style::ConsolePalette::from(console_style, style::SystemColors::load());
+    if (want_style_file) {
+        if (console_style.save(style_path)) std::println("Console style written to {}", style_path.string());
+        else std::println(stderr, "error: cannot write {}", style_path.string());
+        should_exit = true;
+        return opts;
+    }
 
     for (const fs::path& file : load_gitignores(opts, gitignore_files, auto_gitignore))
         std::println(stderr, "warning: cannot read gitignore file {}", file.string());

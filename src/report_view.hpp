@@ -62,14 +62,14 @@ inline std::vector<ReportRow> make_report_rows(const ExecutionStats& stats) {
         rows.push_back({Icon::Error, "Errors", std::format("{}", stats.errors), {255, 50, 50}});
     }
     rows.push_back({Icon::Success, "Execution Time", std::format("{:.2f} ms", stats.duration_ms), {0, 255, 200}});
-    rows.push_back({Icon::Font, "Embedded Font", std::format("Fira Code {}", FIRA_CODE_VERSION), {255, 150, 255}});
+    rows.push_back({Icon::Font, style::active().font_family.empty() ? "Embedded Font" : "Console Font", style::active().font_family.empty() ? std::format("Fira Code {}", FIRA_CODE_VERSION) : console_fonts().family, {255, 150, 255}});
     return rows;
 }
 
 inline ReportStatus make_report_status(const ExecutionStats& stats, bool dry_run) {
     std::string text = dry_run ? "DRY RUN · NO FILES MODIFIED" : "COMPLETED";
     if (stats.errors > 0) text = std::format("{}{} ERROR{}", dry_run ? "DRY RUN · " : "", stats.errors, stats.errors == 1 ? "" : "S");
-    return {std::move(text), stats.errors > 0 ? palette::error : dry_run ? palette::action : palette::dest};
+    return {std::move(text), stats.errors > 0 ? style::active().error : dry_run ? style::active().action : style::active().new_name};
 }
 
 // Single-column symbols available in Fira Code: emoji widths vary between terminals
@@ -88,7 +88,7 @@ constexpr std::pair<std::string_view, Rgb> ansi_icon(sixel::Icon icon) {
         case Icon::Font: return {"¶", {187, 134, 252}};
         case Icon::Count: break;
     }
-    return {"·", palette::note};
+    return {"·", Rgb{140, 140, 175}};
 }
 
 inline std::string dots(std::size_t n) {
@@ -187,8 +187,8 @@ inline std::string render_report_ansi(std::span<const ReportRow> rows, const Rep
             const std::size_t label_len = ttf::utf8_length(row.label);
             const std::string value = fit_right(row.value, static_cast<std::size_t>(col.value_w));
             const std::size_t value_len = ttf::utf8_length(value);
-            content += std::format("{}{}{} {}{} {}{}{} {}{}{}{}", rgb_fg(icon_color), symbol, reset(), rgb_fg(palette::path_name), row.label,
-                                   rgb_fg(palette::console_border), dots(static_cast<std::size_t>(col.label_w) - label_len + kLeaderDots), reset(), bold(),
+            content += std::format("{}{}{} {}{} {}{}{} {}{}{}{}", rgb_fg(icon_color), symbol, reset(), rgb_fg(style::active().name), row.label,
+                                   rgb_fg(style::active().border), dots(static_cast<std::size_t>(col.label_w) - label_len + kLeaderDots), reset(), bold(),
                                    rgb_fg(row.color), value, reset());
             content.append(static_cast<std::size_t>(col.value_w) - value_len, ' ');
             cols += static_cast<std::size_t>(col_w);
@@ -218,9 +218,9 @@ inline sixel::Canvas draw_report_window(std::span<const ReportRow> rows, const R
         const int baseline = f.baseline_in(top, static_cast<float>(ch));
         const int x0 = f.adv * (1 + col.x);
         c.draw_image(sixel::draw_icon(row.icon), x0, static_cast<int>(top) + (ch - sixel::kIconSize) / 2);
-        int x = c.draw_text(f.regular, x0 + m.icon_cols * f.adv, baseline, row.label, palette::path_name, f.adv);
+        int x = c.draw_text(f.regular, x0 + m.icon_cols * f.adv, baseline, row.label, style::active().name, f.adv);
         const std::size_t label_len = ttf::utf8_length(row.label);
-        x = c.draw_text(f.regular, x + f.adv, baseline, dots(static_cast<std::size_t>(col.label_w) - label_len + kLeaderDots), palette::console_border, f.adv);
+        x = c.draw_text(f.regular, x + f.adv, baseline, dots(static_cast<std::size_t>(col.label_w) - label_len + kLeaderDots), style::active().border, f.adv);
         c.draw_text(f.bold, x + f.adv, baseline, term::fit_right(row.value, static_cast<std::size_t>(col.value_w)), row.color, f.adv);
     }
     return c;
