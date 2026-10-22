@@ -1,0 +1,1 @@
+../../../../../plasmoids/shared/gpu/BoxShadow.qml

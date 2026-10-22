@@ -1,0 +1,1 @@
+../../../../../plasmoids/shared/controls/SettingsGroup.qml
