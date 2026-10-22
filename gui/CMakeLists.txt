@@ -42,14 +42,15 @@ endforeach()
 
 file(GLOB FSTURBO_ICONS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS icons/*.svg icons/*.png)
 
-# The shared modules of ~/.insync/trabajo/proyectos/plasmoids/shared, copied into qml/ by its sync.sh
+# The shared modules of ~/.insync/trabajo/proyectos/plasmoids/shared, linked into qml/ by its sync.sh
 # (`sync.sh fsturbotransform`, then `tools/gen_icons.py gui/qml` for the Tango icons): plain resources,
 # not module types, served without the qml/ prefix so their relative imports ("../controls") work.
 file(GLOB FSTURBO_SHARED RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS
     qml/controls/*.qml qml/controls/*.js qml/controls/icons/*.svg qml/controls/icons/bundled.js
     qml/common/*.qml qml/common/*.js
     qml/colorspec/*.qml qml/colorspec/*.js
-    qml/gradientpicker/code/*.js)
+    qml/gradientpicker/code/*.js
+    qml/gpu/*.qml qml/gpu/*.js qml/gpu/qsb/*.qsb)
 foreach(f ${FSTURBO_SHARED})
     string(REGEX REPLACE "^qml/" "" alias "${f}")
     set_source_files_properties(${f} PROPERTIES QT_RESOURCE_ALIAS "${alias}")

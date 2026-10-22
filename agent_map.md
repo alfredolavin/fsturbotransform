@@ -58,8 +58,9 @@ solo cabeceras.
 - La GUI se compila con `QT_NO_KEYWORDS`, porque el motor tiene funciones llamadas `emit`.
 - `regex_tokens.hpp` debe dividir igual que `RegexSpec::parse` y `PatternRule::parse`: si cambias uno,
   cambia el otro.
-- Controles compartidos (`gui/qml/controls`, `common`, `colorspec`, `gradientpicker/code`):
-  - Son copias de `plasmoids/shared` y nunca se editan aquí.
+- Controles compartidos (`gui/qml/controls`, `common`, `colorspec`, `gradientpicker/code`, `gpu`):
+  - Son enlaces simbólicos a `plasmoids/shared` (el qrc embebe los archivos; un clon necesita `plasmoids/` al lado) y
+    nunca se editan aquí. `gpu/` = primitivas de dibujo en la GPU que usan los de color (sin `Canvas`).
   - Se actualizan con `plasmoids/shared/sync.sh fsturbotransform` y después
     `python3 plasmoids/shared/tools/gen_icons.py gui/qml --also <iconos usados vía ColorSetting>`.
   - Se importan con espacio de nombres (`import "controls" as SC`), porque la raíz del módulo tiene sus
